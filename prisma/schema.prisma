@@ -1,0 +1,156 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id String @id @default(uuid())
+  email String @unique
+  password String
+  passwordChangedAt DateTime @default(now())
+  failedLoginAttempts Int @default(0)
+  lastLoginAt DateTime?
+  lastLoginIp String?
+  isActive Boolean @default(true)
+  isEmailVerified Boolean @default(false)
+  emailVerificationToken String?
+  passwordResetToken String?
+  passwordResetExpiresAt DateTime?
+  
+  // Oracle Username (уникальный изменяемый идентификатор)
+  oracleUsername String? @unique
+  
+  // Oracle NickName (неуникальный изменяемый идентификатор для UI)
+  oracleNickName String?
+  
+  // Telegram авторизация
+  telegramId String? @unique
+  telegramUsername String?
+  telegramFirstName String?
+  telegramLastName String?
+  telegramPhotoUrl String?
+  isTelegramVerified Boolean @default(false)
+  
+  // 2FA поля
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret String?
+  backupCodes String[] // JSON array of backup codes
+  
+  // Seed фраза для доступа к Oracle
+  seedPhraseEnabled Boolean @default(false)
+  seedPhraseHash String? // Хеш seed фразы
+  seedPhraseSalt String? // Соль для seed фразы
+  seedPhraseAttempts Int @default(0) // Счетчик попыток
+  seedPhraseLockedUntil DateTime? // Блокировка до времени
+  seedPhraseLastVerifiedAt DateTime? // Последняя проверка seed фразы
+  seedPhraseVerificationCount Int @default(0) // Количество успешных проверок
+  
+  // Аномалии и безопасность
+  anomalyScore Float @default(0.0)
+  lastAnomalyAt DateTime?
+  trustedDevices String[] // JSON array of trusted device fingerprints
+  
+  // Шифрование
+  encryptedData String? // Зашифрованные дополнительные данные
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Связи
+  loginAttempts LoginAttempt[]
+  sessions Session[]
+  securityEvents SecurityEvent[]
+
+  @@map("users")
+}
+
+model LoginAttempt {
+  id String @id @default(uuid())
+  userId String?
+  email String
+  ipAddress String
+  userAgent String?
+  success Boolean
+  failureReason String?
+  timestamp DateTime @default(now())
+
+  // Связи
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([email, timestamp])
+  @@index([ipAddress, timestamp])
+  @@map("login_attempts")
+}
+
+model Session {
+  id String @id @default(uuid())
+  userId String
+  accessTokenJti String @unique
+  refreshTokenJti String @unique
+  ipAddress String
+  userAgent String?
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  lastAccessedAt DateTime @default(now())
+  expiresAt DateTime
+
+  // Связи
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([accessTokenJti])
+  @@index([refreshTokenJti])
+  @@map("sessions")
+}
+
+enum EventType {
+  ANOMALY_DETECTED
+  TWO_FA_ENABLED
+  PASSWORD_CHANGED
+  SUSPICIOUS_ACTIVITY
+  SUCCESS
+  ERROR
+  RATE_LIMIT_EXCEEDED
+  AUTH_ATTEMPT
+  REGISTRATION
+  TOKEN_REFRESH
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model SecurityEvent {
+  id String @id @default(uuid())
+  userId String
+  eventType EventType
+  severity Severity
+  description String
+  metadata Json? // Дополнительные данные события
+  ipAddress String?
+  userAgent String?
+  timestamp DateTime @default(now())
+
+  // Связи
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, timestamp])
+  @@index([eventType, severity])
+  @@map("security_events")
+}
+

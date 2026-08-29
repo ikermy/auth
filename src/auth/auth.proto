@@ -1,0 +1,268 @@
+syntax = "proto3";
+
+package auth;
+
+service AuthService {
+    rpc login(LoginRequest) returns (LoginResponse);
+    rpc register(RegisterRequest) returns (RegisterResponse);
+    rpc refreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+    rpc telegramAuth(TelegramAuthRequest) returns (TelegramAuthResponse);
+    rpc telegramLogin(TelegramLoginRequest) returns (TelegramLoginResponse);
+    rpc linkTelegramAccount(LinkTelegramRequest) returns (LinkTelegramResponse);
+    
+    // Seed phrase methods for Oracle access
+    rpc enableSeedPhrase(EnableSeedPhraseRequest) returns (EnableSeedPhraseResponse);
+    rpc verifySeedPhrase(VerifySeedPhraseRequest) returns (VerifySeedPhraseResponse);
+    rpc disableSeedPhrase(DisableSeedPhraseRequest) returns (DisableSeedPhraseResponse);
+    rpc getSeedPhraseStatus(GetSeedPhraseStatusRequest) returns (GetSeedPhraseStatusResponse);
+    
+    // User profile management
+    rpc changePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+    rpc changeEmail(ChangeEmailRequest) returns (ChangeEmailResponse);
+    rpc changeTelegramAccount(ChangeTelegramAccountRequest) returns (ChangeTelegramAccountResponse);
+    rpc terminateAllSessions(TerminateAllSessionsRequest) returns (TerminateAllSessionsResponse);
+    rpc linkEmailToAccount(LinkEmailRequest) returns (LinkEmailResponse);
+    rpc syncOracleUsername(SyncOracleUsernameRequest) returns (SyncOracleUsernameResponse);
+    
+    // Oracle identity management
+    rpc changeOracleUsername(ChangeOracleUsernameRequest) returns (ChangeOracleUsernameResponse);
+    rpc changeOracleNickName(ChangeOracleNickNameRequest) returns (ChangeOracleNickNameResponse);
+    rpc getOracleIdentity(GetOracleIdentityRequest) returns (GetOracleIdentityResponse);
+    rpc suggestOracleUsernameAlternatives(SuggestOracleUsernameAlternativesRequest) returns (SuggestOracleUsernameAlternativesResponse);
+}
+
+message LoginRequest {
+    string email = 1; // max 255 chars
+    string password = 2; // max 1000 chars
+}
+
+message LoginResponse {
+    string access_token = 1;
+    string refresh_token = 2;
+}
+
+message RegisterRequest {
+    string email = 1; // max 255 chars
+    string password = 2; // max 1000 chars
+}
+
+message RegisterResponse {
+    string access_token = 1;
+    string refresh_token = 2;
+}
+
+message RefreshTokenRequest {
+    string refresh_token = 1; // max 2000 chars
+}
+
+message RefreshTokenResponse {
+    string access_token = 1;
+    string refresh_token = 2;
+}
+
+message TelegramAuthRequest {
+    string telegram_id = 1; // max 50 chars
+    string first_name = 2; // max 100 chars
+    string last_name = 3; // max 100 chars
+    string username = 4; // max 50 chars
+    string photo_url = 5; // max 500 chars
+    string auth_date = 6; // max 20 chars
+    string hash = 7; // max 100 chars
+}
+
+message TelegramAuthResponse {
+    string access_token = 1;
+    string refresh_token = 2;
+    bool is_new_user = 3;
+}
+
+message TelegramLoginRequest {
+    string telegram_id = 1; // max 50 chars
+    string auth_date = 2; // max 20 chars
+    string hash = 3; // max 100 chars
+}
+
+message TelegramLoginResponse {
+    string access_token = 1;
+    string refresh_token = 2;
+}
+
+message LinkTelegramRequest {
+    string user_id = 1; // max 100 chars
+    string telegram_id = 2; // max 50 chars
+    string first_name = 3; // max 100 chars
+    string last_name = 4; // max 100 chars
+    string username = 5; // max 50 chars
+    string photo_url = 6; // max 500 chars
+    string auth_date = 7; // max 20 chars
+    string hash = 8; // max 100 chars
+}
+
+message LinkTelegramResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Seed phrase messages
+message EnableSeedPhraseRequest {
+    string user_id = 1; // max 100 chars
+    string seed_phrase = 2; // max 1000 chars
+}
+
+message EnableSeedPhraseResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message VerifySeedPhraseRequest {
+    string user_id = 1; // max 100 chars
+    string seed_phrase = 2; // max 1000 chars
+}
+
+message VerifySeedPhraseResponse {
+    bool success = 1;
+    string message = 2;
+    string oracle_access_token = 3; // Encrypted token for Oracle access
+}
+
+message DisableSeedPhraseRequest {
+    string user_id = 1; // max 100 chars
+    string seed_phrase = 2; // max 1000 chars
+}
+
+message DisableSeedPhraseResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message GetSeedPhraseStatusRequest {
+    string user_id = 1; // max 100 chars
+}
+
+message GetSeedPhraseStatusResponse {
+    bool enabled = 1;
+    int32 attempts = 2;
+    string locked_until = 3; // ISO string or empty
+    string message = 4;
+}
+
+// User profile management messages
+message ChangePasswordRequest {
+    string user_id = 1; // max 100 chars
+    string current_password = 2; // max 1000 chars
+    string new_password = 3; // max 1000 chars
+}
+
+message ChangePasswordResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message ChangeEmailRequest {
+    string user_id = 1; // max 100 chars
+    string current_password = 2; // max 1000 chars
+    string new_email = 3; // max 255 chars
+}
+
+message ChangeEmailResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message ChangeTelegramAccountRequest {
+    string user_id = 1; // max 100 chars
+    string telegram_id = 2; // max 50 chars
+    string first_name = 3; // max 100 chars
+    string last_name = 4; // max 100 chars
+    string username = 5; // max 50 chars
+    string photo_url = 6; // max 500 chars
+    string auth_date = 7; // max 20 chars
+    string hash = 8; // max 100 chars
+}
+
+message ChangeTelegramAccountResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message TerminateAllSessionsRequest {
+    string user_id = 1; // max 100 chars
+}
+
+message TerminateAllSessionsResponse {
+    bool success = 1;
+    string message = 2;
+    int32 terminated_sessions = 3;
+}
+
+// Link email to existing account
+message LinkEmailRequest {
+    string user_id = 1; // max 100 chars
+    string email = 2; // max 255 chars
+    string password = 3; // max 1000 chars
+}
+
+message LinkEmailResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Sync Oracle Username with Telegram data
+message SyncOracleUsernameRequest {
+    string user_id = 1; // max 100 chars
+}
+
+message SyncOracleUsernameResponse {
+    bool success = 1;
+    string message = 2;
+    string oracle_username = 3; // Updated Oracle username
+}
+
+// Oracle identity management messages
+message ChangeOracleUsernameRequest {
+    string user_id = 1; // max 100 chars
+    string new_username = 2; // max 50 chars
+}
+
+message ChangeOracleUsernameResponse {
+    bool success = 1;
+    string message = 2;
+    string oracle_username = 3; // Updated Oracle username
+    bool has_alternatives = 4; // Whether alternative usernames are available
+    repeated string alternative_usernames = 5; // Suggested alternative usernames
+}
+
+message ChangeOracleNickNameRequest {
+    string user_id = 1; // max 100 chars
+    string new_nickname = 2; // max 100 chars
+}
+
+message ChangeOracleNickNameResponse {
+    bool success = 1;
+    string message = 2;
+    string oracle_nickname = 3; // Updated Oracle nickname
+}
+
+message GetOracleIdentityRequest {
+    string user_id = 1; // max 100 chars
+}
+
+message GetOracleIdentityResponse {
+    bool success = 1;
+    string message = 2;
+    string user_id = 3; // Oracle ID (неизменяемый)
+    string oracle_username = 4; // Oracle Username (изменяемый)
+    string oracle_nickname = 5; // Oracle NickName (изменяемый)
+}
+
+message SuggestOracleUsernameAlternativesRequest {
+    string user_id = 1; // max 100 chars
+    string desired_username = 2; // max 50 chars
+    int32 max_alternatives = 3; // max 10 alternatives
+}
+
+message SuggestOracleUsernameAlternativesResponse {
+    bool success = 1;
+    string message = 2;
+    repeated string alternative_usernames = 3; // Suggested alternative usernames
+}

@@ -1,0 +1,87 @@
+services:
+  app:
+    container_name: auth_app_dev
+    image: auth_app:dev
+    build:
+      context: ../../
+      dockerfile: config/dev/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../dev/.env
+    ports:
+      - "50051:50051"
+      - "9229:9229"  # Debug port
+    networks:
+      - auth_network
+    depends_on:
+      db:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../../src:/app/src:ro  # Hot reload for development
+      - ../../prisma:/app/prisma:ro
+
+  db:
+    container_name: auth_db_dev
+    image: postgres:15
+    restart: unless-stopped
+    env_file:
+      - ../dev/.env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-auth_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../database/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - auth_network
+
+  redis:
+    container_name: auth_redis_dev
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - auth_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      timeout: 5s
+
+  pgadmin:
+    container_name: auth_pgadmin_dev
+    image: dpage/pgadmin4:latest
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@admin.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - auth_network
+    depends_on:
+      - db
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  auth_network:
+    driver: bridge

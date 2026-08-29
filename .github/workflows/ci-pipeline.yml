@@ -1,0 +1,41 @@
+name: CI Pipeline Auth Microservice
+on:
+    pull_request:
+        branches:
+          - staging
+          - main
+          - Auth-Microservice
+    push:
+        branches:
+          - staging
+          - main
+          - Auth-Microservice
+
+jobs:
+    test:
+        runs-on: ubuntu-latest
+        name: Setup, test, and build project
+        env:
+            PORT: 50051
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Install protobuf compiler
+              run: |
+                sudo apt-get update
+                sudo apt-get install -y protobuf-compiler
+
+            - name: Install dependencies
+              run: npm ci --legacy-peer-deps
+
+            - name: Generate protobuf files
+              run: npm run proto:gen
+
+            - name: Build application
+              run: 
+                echo "Run command to build the application if present"
+                npm run build
+
+            - name: Run tests
+              run: npm test
