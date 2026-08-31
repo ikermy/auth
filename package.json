@@ -43,7 +43,6 @@
     "@nestjs/schedule": "^4.1.2",
     "@nestjs/throttler": "^6.4.0",
     "@prisma/client": "^6.14.0",
-    "prisma": "^6.14.0",
     "@types/redis": "^4.0.10",
     "axios": "^1.11.0",
     "bcrypt": "^6.0.0",
@@ -51,11 +50,12 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "kafkajs": "^2.2.4",
+    "prisma": "^6.14.0",
     "qrcode": "^1.5.4",
     "redis": "^5.8.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "speakeasy": "^2.0.10"
+    "speakeasy": "^2.0.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
