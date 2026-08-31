@@ -152,11 +152,13 @@ jobs:
             chmod 600 $DEPLOY_DIR/.env
 
             # ── Деплой приложения (образы тянутся из ghcr.io, на сервере не собираются) ──
+            # --project-directory указывает compose читать .env из $DEPLOY_DIR (интерполяция image:)
+            # и совпадает с env_file ../../.env (переменные внутри контейнера).
             docker login ghcr.io -u ${{ github.actor }} --password-stdin <<< "${{ secrets.GITHUB_TOKEN }}"
-            docker compose -f $COMPOSE_FILE pull app
-            docker compose -f $COMPOSE_FILE up -d app
+            docker compose --project-directory $DEPLOY_DIR -f $COMPOSE_FILE pull app
+            docker compose --project-directory $DEPLOY_DIR -f $COMPOSE_FILE up -d app
 
             # ── Проверка ──
-            docker compose -f $COMPOSE_FILE ps app
-            docker compose -f $COMPOSE_FILE exec -T app sh -c 'nc -z localhost 50051' || echo "WARNING: healthcheck nc exited non-zero (start_period)"
+            docker compose --project-directory $DEPLOY_DIR -f $COMPOSE_FILE ps app
+            docker compose --project-directory $DEPLOY_DIR -f $COMPOSE_FILE exec -T app sh -c 'nc -z localhost 50051' || echo "WARNING: healthcheck nc exited non-zero (start_period)"
             docker image prune -f
