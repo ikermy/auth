@@ -66,5 +66,6 @@ EXPOSE 50051
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD nc -z localhost 50051 || exit 1
 
-# Запускаем приложение
-CMD ["npm", "run", "start:prod"]
+# Запускаем приложение. Перед стартом применяем миграции Prisma к общей БД (auth_db),
+# иначе таблицы (user, session и др.) отсутствуют → регистрация/вход падают.
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]

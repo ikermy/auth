@@ -86,12 +86,14 @@ jobs:
 
       - name: Validate required secrets
         env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
           JWT_SUPER_SECRET_WORD: ${{ secrets.JWT_SUPER_SECRET_WORD }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           HOST: ${{ secrets.HOST }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          test -n "$JWT_SUPER_SECRET_WORD" || { echo "JWT_SUPER_SECRET_WORD is not configured"; exit 1; }
+          # JWT_SECRET — секрет подписи JWT; ОБЯЗАН совпадать с BFF JWT_SECRET.
+          test -n "$JWT_SECRET" || { echo "JWT_SECRET is not configured"; exit 1; }
           test -n "$ENCRYPTION_KEY" || { echo "ENCRYPTION_KEY is not configured"; exit 1; }
           test -n "$HOST" || { echo "HOST is not configured"; exit 1; }
           test -n "$SSH_PRIVATE_KEY" || { echo "SSH_PRIVATE_KEY is not configured"; exit 1; }
@@ -114,6 +116,7 @@ jobs:
           SHA: ${{ github.sha }}
           DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
           COMPOSE_FILE: ${{ env.COMPOSE_FILE }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
           JWT_SUPER_SECRET_WORD: ${{ secrets.JWT_SUPER_SECRET_WORD }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -127,7 +130,7 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
-          envs: REGISTRY,IMAGE,SHA,DEPLOY_DIR,COMPOSE_FILE,JWT_SUPER_SECRET_WORD,ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,DATABASE_URL,REDIS_HOST,REDIS_PORT,REDIS_PASSWORD,KAFKA_BROKERS
+          envs: REGISTRY,IMAGE,SHA,DEPLOY_DIR,COMPOSE_FILE,JWT_SECRET,JWT_SUPER_SECRET_WORD,ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,DATABASE_URL,REDIS_HOST,REDIS_PORT,REDIS_PASSWORD,KAFKA_BROKERS
           script: |
             set -e
             # scp сохраняет относительный путь: файлы лежат в $DEPLOY_DIR/config/prod/
@@ -138,8 +141,10 @@ jobs:
 
             # ── .env: образы тянутся из ghcr.io + обязательные для прод секреты ──
             # env_file в compose: ../../.env  →  $DEPLOY_DIR/.env
+            # JWT_SECRET ОБЯЗАН совпадать с BFF JWT_SECRET (иначе BFF не валидирует токены).
             cat > $DEPLOY_DIR/.env <<EOF
             AUTH_IMAGE=$REGISTRY/$IMAGE:$SHA
+            JWT_SECRET=$JWT_SECRET
             JWT_SUPER_SECRET_WORD=$JWT_SUPER_SECRET_WORD
             ENCRYPTION_KEY=$ENCRYPTION_KEY
             TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN

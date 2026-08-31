@@ -30,7 +30,12 @@ services:
       REDIS_PORT: "${REDIS_PORT:-6379}"
       REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
       KAFKA_BROKERS: "${KAFKA_BROKERS:-kafka:9092}"
-      JWT_SUPER_SECRET_WORD: "${JWT_SUPER_SECRET_WORD:?JWT_SUPER_SECRET_WORD is required}"
+      # JWT_SECRET — секрет подписи JWT (Auth использует JWT_SECRET, не JWT_SUPER_SECRET_WORD).
+      # ОБЯЗАН совпадать с BFF JWT_SECRET (иначе BFF не валидирует токены локально).
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required}"
+      JWT_SUPER_SECRET_WORD: "${JWT_SUPER_SECRET_WORD:-${JWT_SECRET}}"
+      JWT_EXPIRES_IN: "${JWT_EXPIRES_IN:-15m}"
+      JWT_REFRESH_IN: "${JWT_REFRESH_IN:-7d}"
       ENCRYPTION_KEY: "${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}"
       # Реальный токен бота обязателен в проде, иначе Auth отклоняет все входы через Telegram
       # ("TELEGRAM_BOT_TOKEN is not configured"). Задаётся из secrets.TELEGRAM_BOT_TOKEN в cd-pipeline.
