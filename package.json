@@ -29,6 +29,7 @@
     "proto:gen": "protoc --plugin=protoc-gen-ts_proto=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=./ --ts_proto_opt=outputServices=grpc-js,env=node,esModuleInterop=true,esModuleImpl=true,esModulePrefix=true,addGrpcMetadata=true,oneof=unions,outputJsonMethods=false,outputServices=grpc-js,env=node,esModuleInterop=true,esModuleImpl=true,esModulePrefix=true,addGrpcMetadata=true,oneof=unions,outputJsonMethods=false ./src/auth/auth.proto"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.6.3",
     "@grpc/grpc-js": "^1.13.4",
     "@grpc/proto-loader": "^0.8.0",
     "@nestjs/axios": "^4.0.1",
