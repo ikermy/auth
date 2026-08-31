@@ -1,8 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { JwtModule } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 import { SecurityLoggerService } from './security-logger.service';
 import { BruteForceService } from './services/brute-force.service';
@@ -12,7 +9,8 @@ import { TlsSecurityService } from './services/tls-security.service';
 import { TwoFactorAuthService } from './services/two-factor-auth.service';
 import { AnomalyDetectionService } from './services/anomaly-detection.service';
 import { EncryptionService } from './services/encryption.service';
-import { PrismaService } from '../prisma.service';
+import { SessionService } from './services/session.service';
+import { KafkaProducerService } from './services/kafka-producer.service';
 
 @Module({
   imports: [
@@ -26,21 +24,8 @@ import { PrismaService } from '../prisma.service';
         limit: 1000, // максимум 1000 запросов в час
       },
     ]),
-    JwtModule.registerAsync({
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.getOrThrow<string>('JWT_SUPER_SECRET_WORD'),
-        signOptions: {
-          expiresIn: configService.getOrThrow<string>('JWT_EXPIRES_IN'),
-        },
-      }),
-      inject: [ConfigService],
-    }),
   ],
   providers: [
-    {
-      provide: APP_GUARD,
-      useClass: ThrottlerGuard,
-    },
     SecurityLoggerService,
     BruteForceService,
     SecureAuthService,
@@ -49,7 +34,8 @@ import { PrismaService } from '../prisma.service';
     TwoFactorAuthService,
     AnomalyDetectionService,
     EncryptionService,
-    PrismaService,
+    SessionService,
+    KafkaProducerService,
   ],
   exports: [
     SecurityLoggerService,
@@ -60,6 +46,8 @@ import { PrismaService } from '../prisma.service';
     TwoFactorAuthService,
     AnomalyDetectionService,
     EncryptionService,
+    SessionService,
+    KafkaProducerService,
   ],
 })
 export class SecurityModule {}

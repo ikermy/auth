@@ -11,7 +11,7 @@ export const grpcConfigFactory = (): MicroserviceOptions => ({
   options: {
     url: '0.0.0.0:50051',
     package: 'auth',
-    protoPath: join(process.cwd(), 'src', 'auth', 'auth.proto'),
+    protoPath: join(__dirname, '..', 'auth', 'auth.proto'),
   },
 });
 
@@ -20,7 +20,7 @@ export const grpcConfig: MicroserviceOptions = {
   options: {
     url: process.env.GRPC_URL || '0.0.0.0:50051',
     package: process.env.GRPC_PACKAGE || 'auth',
-    protoPath: join(process.cwd(), 'src', 'auth', 'auth.proto'),
+    protoPath: join(__dirname, '..', 'auth', 'auth.proto'),
     credentials:
       process.env.TLS_ENABLED === 'true'
         ? (() => {

@@ -15,11 +15,23 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserRole {
+  user
+  admin
+}
+
+enum AccountOrigin {
+  email
+  telegram
+}
+
 model User {
   id String @id @default(uuid())
   email String @unique
   password String
   passwordChangedAt DateTime @default(now())
+  role UserRole @default(user)
+  origin AccountOrigin @default(email)
   failedLoginAttempts Int @default(0)
   lastLoginAt DateTime?
   lastLoginIp String?
@@ -29,12 +41,15 @@ model User {
   passwordResetToken String?
   passwordResetExpiresAt DateTime?
   
-  // Oracle Username (уникальный изменяемый идентификатор)
-  oracleUsername String? @unique
-  
-  // Oracle NickName (неуникальный изменяемый идентификатор для UI)
-  oracleNickName String?
-  
+  // User Username (уникальный изменяемый идентификатор)
+  username String? @unique
+
+  // User NickName (неуникальный изменяемый идентификатор для UI)
+  nickname String?
+
+  // Загруженная фотография профиля (base64 data URL, см. changeAvatar)
+  photoBase64 String?
+
   // Telegram авторизация
   telegramId String? @unique
   telegramUsername String?
@@ -46,9 +61,11 @@ model User {
   // 2FA поля
   twoFactorEnabled Boolean @default(false)
   twoFactorSecret String?
-  backupCodes String[] // JSON array of backup codes
+  twoFactorPendingSecret String? // Secret в состоянии pending до подтверждения первого кода
+  twoFactorPendingSecretCreatedAt DateTime?
+  backupCodes String[] // JSON array of backup codes (хранятся как хеши)
   
-  // Seed фраза для доступа к Oracle
+  // Seed фраза для доступа к User
   seedPhraseEnabled Boolean @default(false)
   seedPhraseHash String? // Хеш seed фразы
   seedPhraseSalt String? // Соль для seed фразы
@@ -72,6 +89,9 @@ model User {
   loginAttempts LoginAttempt[]
   sessions Session[]
   securityEvents SecurityEvent[]
+  telegramIdentityAudits TelegramIdentityAudit[]
+  usernameReservations UsernameReservation[]
+  recoveryRequests RecoveryRequest[]
 
   @@map("users")
 }
@@ -115,6 +135,67 @@ model Session {
   @@map("sessions")
 }
 
+model TelegramIdentityAudit {
+  id String @id @default(uuid())
+  userId String
+  eventType String // например: telegram_changed, telegram_linked
+  previousData Json // снимок старых Telegram-данных и сопутствующих параметров
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("telegram_identity_audit")
+}
+
+enum ReservationState {
+  active
+  expired
+  released_by_admin
+}
+
+model UsernameReservation {
+  id String @id @default(uuid())
+  userId String
+  username String @unique // резервируемое User username
+  state ReservationState @default(active)
+  reservedAt DateTime @default(now())
+  expiresAt DateTime // конец grace period
+  releasedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([state, expiresAt])
+  @@map("username_reservations")
+}
+
+enum RecoveryStatus {
+  pending_review
+  approved
+  rejected
+  cancelled
+  needs_review
+  granted
+}
+
+model RecoveryRequest {
+  id String @id @default(uuid())
+  userId String
+  status RecoveryStatus @default(pending_review)
+  reason String? // причина отказа/доп. проверки (фиксирует администратор)
+  decidedBy String?
+  createdAt DateTime @default(now())
+  decidedAt DateTime?
+  grantExpiresAt DateTime? // срок действия recovery grant
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("recovery_requests")
+}
+
 enum EventType {
   ANOMALY_DETECTED
   TWO_FA_ENABLED
@@ -137,7 +218,7 @@ enum Severity {
 
 model SecurityEvent {
   id String @id @default(uuid())
-  userId String
+  userId String? // nullable: системные события без привязки к User (AUDIT-01)
   eventType EventType
   severity Severity
   description String
@@ -147,7 +228,7 @@ model SecurityEvent {
   timestamp DateTime @default(now())
 
   // Связи
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, timestamp])
   @@index([eventType, severity])

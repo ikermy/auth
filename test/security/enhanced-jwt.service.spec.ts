@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { EnhancedJwtService } from '../../src/security/services/enhanced-jwt.service';
+import { SessionService } from '../../src/security/services/session.service';
 import { SecurityLoggerService } from '../../src/security/security-logger.service';
 
 // Mock Redis
@@ -64,6 +65,15 @@ describe('EnhancedJwtService', () => {
             logJwtEvent: jest.fn(),
             logRedisEvent: jest.fn(),
             logSecurityError: jest.fn(),
+          },
+        },
+        {
+          provide: SessionService,
+          useValue: {
+            create: jest.fn().mockResolvedValue({ id: 'session-1' }),
+            findByRefreshJti: jest.fn(),
+            deactivate: jest.fn(),
+            deactivateAll: jest.fn(),
           },
         },
       ],

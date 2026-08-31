@@ -25,7 +25,7 @@
     "test:e2e:grpc": "jest --testPathPattern=e2e/grpc-end-to-end.spec.ts",
     "test:unit": "jest --testPathPattern=src",
     "test:coverage": "jest --coverage --coverageReporters=text-lcov | coveralls",
-    "test:ci": "npm run test:all",
+    "test:ci": "npm run test:all && npm run test:e2e",
     "proto:gen": "protoc --plugin=protoc-gen-ts_proto=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=./ --ts_proto_opt=outputServices=grpc-js,env=node,esModuleInterop=true,esModuleImpl=true,esModulePrefix=true,addGrpcMetadata=true,oneof=unions,outputJsonMethods=false,outputServices=grpc-js,env=node,esModuleInterop=true,esModuleImpl=true,esModulePrefix=true,addGrpcMetadata=true,oneof=unions,outputJsonMethods=false ./src/auth/auth.proto"
   },
   "dependencies": {

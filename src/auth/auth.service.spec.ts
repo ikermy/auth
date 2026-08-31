@@ -4,8 +4,10 @@ import { PrismaService } from '../prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { EncryptionService } from '../security/services/encryption.service';
-import { OracleUsernameService } from './services/oracle-username.service';
-import { OracleIdentityService } from './services/oracle-identity.service';
+import { EnhancedJwtService } from '../security/services/enhanced-jwt.service';
+import { SessionService } from '../security/services/session.service';
+import { UsernameService } from './services/username.service';
+import { UserIdentityService } from './services/user-identity.service';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -43,23 +45,39 @@ describe('AuthService', () => {
           },
         },
         {
-          provide: OracleUsernameService,
+          provide: UsernameService,
           useValue: {
-            generateOracleUsername: jest.fn(),
-            isValidOracleUsername: jest.fn(),
-            normalizeOracleUsername: jest.fn(),
-            generateAlternativeOracleUsername: jest.fn(),
+            generateUsername: jest.fn(),
+            isValidUserUsername: jest.fn(),
+            normalizeUserUsername: jest.fn(),
+            generateAlternativeUsername: jest.fn(),
           },
         },
         {
-          provide: OracleIdentityService,
+          provide: UserIdentityService,
           useValue: {
-            getOracleIdentity: jest.fn(),
-            changeOracleUsername: jest.fn(),
-            changeOracleNickName: jest.fn(),
-            canChangeOracleUsername: jest.fn(),
+            getUserIdentity: jest.fn(),
+            changeUsername: jest.fn(),
+            changeNickname: jest.fn(),
+            canChangeUsername: jest.fn(),
             suggestUsernameAlternatives: jest.fn(),
             generateUsernameAlternatives: jest.fn(),
+          },
+        },
+        {
+          provide: EnhancedJwtService,
+          useValue: {
+            generateTokens: jest.fn(),
+            verifyToken: jest.fn(),
+          },
+        },
+        {
+          provide: SessionService,
+          useValue: {
+            create: jest.fn(),
+            findByRefreshJti: jest.fn(),
+            deactivate: jest.fn(),
+            deactivateAll: jest.fn(),
           },
         },
       ],

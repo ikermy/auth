@@ -4,8 +4,8 @@ import { PrismaService } from '../prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import { RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
-import { OracleUsernameService } from './services/oracle-username.service';
-import { OracleIdentityService } from './services/oracle-identity.service';
+import { UsernameService } from './services/username.service';
+import { UserIdentityService } from './services/user-identity.service';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
@@ -100,8 +100,8 @@ export class TelegramAuthService {
     private readonly prismaService: PrismaService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-    private readonly oracleUsernameService: OracleUsernameService,
-    private readonly oracleIdentityService: OracleIdentityService,
+    private readonly usernameService: UsernameService,
+    private readonly userIdentityService: UserIdentityService,
     private readonly httpService: HttpService,
   ) {}
 
@@ -302,15 +302,27 @@ export class TelegramAuthService {
 
       let isNewUser = false;
 
+      // STATE-01: деактивированный аккаунт не может входить ни по одному способу
+      if (user && user.isActive === false) {
+        throw new RpcException({
+          code: status.PERMISSION_DENIED,
+          message: 'Account is deactivated',
+        });
+      }
+
       if (!user) {
         // Создаем нового пользователя с безопасными данными
         const secureEmail = this.generateSecureEmail(authData.telegramId);
         const securePassword = this.generateSecurePassword();
-        const oracleUsername =
-          this.oracleUsernameService.generateOracleUsername(
+        const baseUserUsername =
+          this.usernameService.generateUsername(
             authData.telegramId,
             authData.username,
           );
+        const username = await this.resolveUniqueUserUsername(
+          baseUserUsername,
+          authData.telegramId,
+        );
 
         user = await this.prismaService.user.create({
           data: {
@@ -320,22 +332,28 @@ export class TelegramAuthService {
             telegramLastName: authData.lastName,
             telegramPhotoUrl: authData.photoUrl,
             isTelegramVerified: true,
-            oracleUsername: oracleUsername,
+            username: username,
             email: secureEmail,
             password: securePassword,
+            origin: 'telegram', // Аккаунт создан через Telegram identity
           },
         });
         isNewUser = true;
         this.logger.log(
-          `Created new user via Telegram: ${authData.telegramId} with Oracle username: ${oracleUsername}`,
+          `Created new user via Telegram: ${authData.telegramId} with User username: ${username}`,
         );
       } else {
         // Обновляем данные существующего пользователя
-        const newOracleUsername =
-          this.oracleUsernameService.generateOracleUsername(
+        const baseUserUsername =
+          this.usernameService.generateUsername(
             authData.telegramId,
             authData.username,
           );
+        const newUserUsername = await this.resolveUniqueUserUsername(
+          baseUserUsername,
+          user.id,
+          user.id,
+        );
 
         user = await this.prismaService.user.update({
           where: { id: user.id },
@@ -345,12 +363,12 @@ export class TelegramAuthService {
             telegramLastName: authData.lastName,
             telegramPhotoUrl: authData.photoUrl,
             isTelegramVerified: true,
-            oracleUsername: newOracleUsername, // Синхронизируем Oracle username с Telegram
+            username: newUserUsername, // Синхронизируем User username с Telegram
             lastLoginAt: new Date(),
           },
         });
         this.logger.log(
-          `Updated existing user via Telegram: ${authData.telegramId} with Oracle username: ${newOracleUsername}`,
+          `Updated existing user via Telegram: ${authData.telegramId} with User username: ${newUserUsername}`,
         );
       }
 
@@ -427,18 +445,7 @@ export class TelegramAuthService {
     authData: TelegramAuthData,
   ): Promise<boolean> {
     try {
-      // Проверяем, не привязан ли уже этот Telegram ID к другому аккаунту
-      const existingTelegramUser = await this.prismaService.user.findUnique({
-        where: { telegramId: authData.telegramId },
-      });
-
-      if (existingTelegramUser && existingTelegramUser.id !== userId) {
-        throw new Error(
-          'This Telegram account is already linked to another user',
-        );
-      }
-
-      // Проверяем существование пользователя перед обновлением
+      // Проверяем существование пользователя
       const user = await this.prismaService.user.findUnique({
         where: { id: userId },
       });
@@ -448,22 +455,42 @@ export class TelegramAuthService {
       }
 
       // Привязываем Telegram к существующему аккаунту
-      const oracleUsername = this.oracleUsernameService.generateOracleUsername(
-        authData.telegramId,
-        authData.username,
+      const baseUserUsername =
+        this.usernameService.generateUsername(
+          authData.telegramId,
+          authData.username,
+        );
+      const username = await this.resolveUniqueUserUsername(
+        baseUserUsername,
+        userId,
+        userId,
       );
 
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          telegramId: authData.telegramId,
-          telegramUsername: authData.username,
-          telegramFirstName: authData.firstName,
-          telegramLastName: authData.lastName,
-          telegramPhotoUrl: authData.photoUrl,
-          isTelegramVerified: true,
-          oracleUsername: oracleUsername, // Устанавливаем Oracle username
-        },
+      // Атомарная операция linking: проверка занятости Telegram ID + запись
+      // в одной транзакции (приоритет linking над фоновой sync — §5.1).
+      await this.prismaService.$transaction(async (tx) => {
+        const existingTelegramUser = await tx.user.findUnique({
+          where: { telegramId: authData.telegramId },
+        });
+
+        if (existingTelegramUser && existingTelegramUser.id !== userId) {
+          throw new Error(
+            'This Telegram account is already linked to another user',
+          );
+        }
+
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            telegramId: authData.telegramId,
+            telegramUsername: authData.username,
+            telegramFirstName: authData.firstName,
+            telegramLastName: authData.lastName,
+            telegramPhotoUrl: authData.photoUrl,
+            isTelegramVerified: true,
+            username: username, // Устанавливаем User username
+          },
+        });
       });
 
       this.logger.log(
@@ -597,8 +624,8 @@ export class TelegramAuthService {
     }
   }
 
-  // Обновление Oracle username при логине через Telegram
-  async updateOracleUsernameOnLogin(telegramId: string): Promise<void> {
+  // Обновление User username при логине через Telegram
+  async updateUserUsernameOnLogin(telegramId: string): Promise<void> {
     try {
       // Получаем пользователя из БД
       const user = await this.prismaService.user.findUnique({
@@ -606,7 +633,7 @@ export class TelegramAuthService {
         select: {
           id: true,
           telegramUsername: true,
-          oracleUsername: true,
+          username: true,
         },
       });
 
@@ -614,50 +641,62 @@ export class TelegramAuthService {
         return;
       }
 
-      // Генерируем новый Oracle username на основе текущих данных
-      const newOracleUsername =
-        this.oracleUsernameService.generateOracleUsername(
+      // Генерируем новый User username на основе текущих данных
+      const baseUserUsername =
+        this.usernameService.generateUsername(
           telegramId,
           user.telegramUsername || undefined,
         );
 
+      // Резолвим уникальный User username (стабильный fallback при конфликте)
+      const newUserUsername = await this.resolveUniqueUserUsername(
+        baseUserUsername,
+        user.id,
+        user.id,
+      );
+
       // Проверяем, нужно ли обновлять
-      if (newOracleUsername !== user.oracleUsername) {
-        // Проверяем, что новый username не занят другим пользователем
-        const existingUser = await this.prismaService.user.findUnique({
-          where: { oracleUsername: newOracleUsername },
+      if (newUserUsername !== user.username) {
+        await this.prismaService.user.update({
+          where: { id: user.id },
+          data: {
+            username: newUserUsername,
+          },
         });
 
-        if (!existingUser || existingUser.id === user.id) {
-          // Обновляем Oracle username
-          await this.prismaService.user.update({
-            where: { id: user.id },
-            data: {
-              oracleUsername: newOracleUsername,
-            },
-          });
-
-          this.logger.log(
-            `🔄 [ORACLE] Updated username for user ${user.id}: ${user.oracleUsername} -> ${newOracleUsername}`,
-          );
-        } else {
-          // Генерируем альтернативные username
-          const alternatives =
-            await this.oracleIdentityService.generateUsernameAlternatives(
-              newOracleUsername,
-              user.id,
-              3,
-            );
-
-          this.logger.warn(
-            `⚠️ [ORACLE] Cannot update username for user ${user.id}: ${newOracleUsername} is already taken. Alternatives: ${alternatives.join(', ')}`,
-          );
-        }
+        this.logger.log(
+          `🔄 [USER] Updated username for user ${user.id}: ${user.username} -> ${newUserUsername}`,
+        );
       }
     } catch (error) {
       this.logger.error(
-        `Error updating Oracle username on login: ${(error as Error).message}`,
+        `Error updating User username on login: ${(error as Error).message}`,
       );
     }
+  }
+
+  /**
+   * Резолвит свободный User username со стабильным fallback при конфликте (TG-03).
+   * @param baseUsername желаемое имя
+   * @param stableId стабильный идентификатор для суффикса (User ID или Telegram ID)
+   * @param userId текущий пользователь, которому принадлежит точное имя (если применимо)
+   */
+  private async resolveUniqueUserUsername(
+    baseUsername: string,
+    stableId: string,
+    userId?: string,
+  ): Promise<string> {
+    const existing = await this.prismaService.user.findUnique({
+      where: { username: baseUsername },
+    });
+    if (!existing || (userId && existing.id === userId)) {
+      return baseUsername;
+    }
+
+    const suffix = stableId.replace(/-/g, '').slice(0, 4).toLowerCase();
+    return this.usernameService.generateAlternativeUsername(
+      baseUsername,
+      suffix,
+    );
   }
 }

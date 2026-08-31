@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { BCRYPT_COST } from '../common/constants';
 import {
   LoginRequest,
   LoginResponse,
@@ -22,16 +23,22 @@ import {
   TerminateAllSessionsResponse,
   LinkEmailRequest,
   LinkEmailResponse,
-  SyncOracleUsernameRequest,
-  SyncOracleUsernameResponse,
-  ChangeOracleUsernameRequest,
-  ChangeOracleUsernameResponse,
-  ChangeOracleNickNameRequest,
-  ChangeOracleNickNameResponse,
-  GetOracleIdentityRequest,
-  GetOracleIdentityResponse,
-  SuggestOracleUsernameAlternativesRequest,
-  SuggestOracleUsernameAlternativesResponse,
+  SyncUsernameRequest,
+  SyncUsernameResponse,
+  ChangeUsernameRequest,
+  ChangeUsernameResponse,
+  ChangeNicknameRequest,
+  ChangeNicknameResponse,
+  ChangeTelegramUsernameRequest,
+  ChangeTelegramUsernameResponse,
+  ChangeAvatarRequest,
+  ChangeAvatarResponse,
+  GetUserIdentityRequest,
+  GetUserIdentityResponse,
+  GetUserProfileRequest,
+  GetUserProfileResponse,
+  SuggestUsernameAlternativesRequest,
+  SuggestUsernameAlternativesResponse,
 } from './auth';
 import { PrismaService } from '../prisma.service';
 import { JwtService } from '@nestjs/jwt';
@@ -40,8 +47,10 @@ import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 import { status } from '@grpc/grpc-js';
 import { EncryptionService } from '../security/services/encryption.service';
-import { OracleUsernameService } from './services/oracle-username.service';
-import { OracleIdentityService } from './services/oracle-identity.service';
+import { EnhancedJwtService } from '../security/services/enhanced-jwt.service';
+import { SessionService } from '../security/services/session.service';
+import { UsernameService } from './services/username.service';
+import { UserIdentityService } from './services/user-identity.service';
 import * as crypto from 'crypto';
 
 interface GrpcError {
@@ -58,8 +67,10 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly encryptionService: EncryptionService,
-    private readonly oracleUsernameService: OracleUsernameService,
-    private readonly oracleIdentityService: OracleIdentityService,
+    private readonly usernameService: UsernameService,
+    private readonly userIdentityService: UserIdentityService,
+    private readonly enhancedJwtService: EnhancedJwtService,
+    private readonly sessionService: SessionService,
   ) {}
   async login(data: LoginRequest): Promise<LoginResponse> {
     const { email, password } = data;
@@ -99,7 +110,7 @@ export class AuthService {
 
   async register(data: RegisterRequest): Promise<RegisterResponse> {
     try {
-      const { email, password } = data;
+      const { email, password, username } = data;
 
       const existingUser = await this.prismaService.user.findUnique({
         where: {
@@ -115,23 +126,46 @@ export class AuthService {
         throw new RpcException(error);
       }
 
-      const salt = await bcrypt.genSalt(14);
+      // Username обязателен: нормализуем, валидируем, резолвим уникальность.
+      if (!username || username.trim().length === 0) {
+        const error: GrpcError = {
+          code: status.INVALID_ARGUMENT,
+          message: 'Username is required',
+        };
+        throw new RpcException(error);
+      }
+      const normalizedUsername = this.usernameService.normalizeUserUsername(username);
+      if (!this.usernameService.isValidUserUsername(normalizedUsername)) {
+        const error: GrpcError = {
+          code: status.INVALID_ARGUMENT,
+          message:
+            'Username may only contain letters, digits, underscores and hyphens (max 50 chars)',
+        };
+        throw new RpcException(error);
+      }
+      const resolvedUsername = await this.resolveUniqueUserUsername(
+        normalizedUsername,
+        '', // новый пользователь — userId ещё нет
+      );
+
+      const salt = await bcrypt.genSalt(BCRYPT_COST);
       const hashedPassword = await bcrypt.hash(password, salt);
 
       const newUser = await this.prismaService.user.create({
         data: {
           email,
           password: hashedPassword,
+          username: resolvedUsername,
         },
       });
 
-      const { accessToken, refreshToken } = await this.generateTokens(
+      const tokens = await this.enhancedJwtService.generateTokens(
         newUser.id,
         newUser.email,
       );
       return {
-        accessToken,
-        refreshToken,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
       };
     } catch (error) {
       this.logger.error(`Registration error: ${(error as Error).message}`);
@@ -175,14 +209,9 @@ export class AuthService {
         expiresIn: this.configService.getOrThrow<string>('JWT_REFRESH_IN'),
       });
 
-      // Шифруем токены перед возвратом
-      const encryptedAccessToken = this.encryptionService.encrypt(accessToken);
-      const encryptedRefreshToken =
-        this.encryptionService.encrypt(refreshToken);
-
       return {
-        accessToken: encryptedAccessToken,
-        refreshToken: encryptedRefreshToken,
+        accessToken,
+        refreshToken,
       };
     } catch (error) {
       this.logger.error(`Token generation error: ${(error as Error).message}`);
@@ -194,11 +223,9 @@ export class AuthService {
     refreshToken: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
     try {
-      const payload: { sub: string; type?: string } =
+      const payload: { sub: string; type?: string; jti?: string } =
         await this.jwtService.verifyAsync(refreshToken, {
-          secret: this.configService.getOrThrow<string>(
-            'JWT_SUPER_SECRET_WORD',
-          ),
+          secret: this.configService.getOrThrow<string>('JWT_SECRET'),
         });
 
       // Проверяем тип токена
@@ -206,6 +233,26 @@ export class AuthService {
         const error: GrpcError = {
           code: status.PERMISSION_DENIED,
           message: 'Invalid token type for refresh',
+        };
+        throw new RpcException(error);
+      }
+
+      // Проверяем активную сессию по jti refresh-токена (refresh rotation /
+      // reuse detection). Если сессия отсутствует или деактивирована — токен
+      // считается переиспользованным/недействительным.
+      if (!payload.jti) {
+        const error: GrpcError = {
+          code: status.PERMISSION_DENIED,
+          message: 'Invalid refresh token',
+        };
+        throw new RpcException(error);
+      }
+
+      const session = await this.sessionService.findByRefreshJti(payload.jti);
+      if (!session || !session.isActive || session.expiresAt < new Date()) {
+        const error: GrpcError = {
+          code: status.PERMISSION_DENIED,
+          message: 'Invalid refresh token',
         };
         throw new RpcException(error);
       }
@@ -224,7 +271,18 @@ export class AuthService {
         throw new RpcException(error);
       }
 
-      return await this.generateTokens(user.id, user.email);
+      // Ротация: деактивируем текущую сессию и выпускаем новую пару,
+      // которая создаёт новую сессию. Повтор старого refresh теперь отклоняется.
+      await this.sessionService.deactivate(session.id);
+
+      const tokens = await this.enhancedJwtService.generateTokens(
+        user.id,
+        user.email,
+      );
+      return {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+      };
     } catch (error) {
       // Безопасная обработка ошибок
       this.logger.error(`Token refresh error: ${(error as Error).message}`);
@@ -301,7 +359,7 @@ export class AuthService {
 
       // Генерируем соль и хешируем seed фразу
       const salt = crypto.randomBytes(32).toString('hex');
-      const hash = await bcrypt.hash(seedPhrase, 14);
+      const hash = await bcrypt.hash(seedPhrase, BCRYPT_COST);
 
       // Сохраняем соль и хеш в базу
       await this.prismaService.user.update({
@@ -408,17 +466,29 @@ export class AuthService {
           },
         });
 
-        // Генерируем специальный токен для доступа к Oracle
-        const oracleToken = await this.generateOracleAccessToken(
-          userId,
-          user.email,
-        );
+        // Recovery — security change: отзываем все активные сессии,
+        // чтобы старые refresh-токены перестали действовать.
+        await this.sessionService.deactivateAll(userId);
 
-        this.logger.log(`🔐 [SEED] Verified for user ${userId}`);
+        // Recovery flow (§6.3): создаём запрос на восстановление в статусе
+        // pending_review и начинаем grace period. Полный доступ выдаётся только
+        // после административного подтверждения в виде ограниченного recovery grant.
+        const recoveryRequest = await this.prismaService.recoveryRequest.create({
+          data: {
+            userId,
+            status: 'pending_review',
+          },
+        });
+
+        this.logger.log(
+          `🔐 [SEED] Verified for user ${userId}, recovery request ${recoveryRequest.id}`,
+        );
         return {
           success: true,
-          message: 'Seed phrase verified successfully',
-          oracleAccessToken: this.encryptionService.encrypt(oracleToken),
+          message:
+            'Recovery phrase verified. Request created, pending administrative review.',
+          requestId: recoveryRequest.id,
+          grantState: 'pending_review',
         };
       } else {
         // Увеличиваем счетчик попыток
@@ -613,23 +683,6 @@ export class AuthService {
     }
   }
 
-  private async generateOracleAccessToken(
-    userId: string,
-    email: string,
-  ): Promise<string> {
-    const payload = {
-      sub: userId,
-      email,
-      type: 'oracle_access',
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 60 * 60, // 1 час для Oracle доступа
-    };
-
-    return await this.jwtService.signAsync(payload, {
-      secret: this.configService.getOrThrow<string>('JWT_SUPER_SECRET_WORD'),
-    });
-  }
-
   // User profile management methods
   async changePassword(
     data: ChangePasswordRequest,
@@ -701,7 +754,7 @@ export class AuthService {
       }
 
       // Хешируем новый пароль
-      const salt = await bcrypt.genSalt(14);
+      const salt = await bcrypt.genSalt(BCRYPT_COST);
       const hashedNewPassword = await bcrypt.hash(newPassword, salt);
 
       // Обновляем пароль
@@ -712,6 +765,10 @@ export class AuthService {
           passwordChangedAt: new Date(),
         },
       });
+
+      // Смена пароля — security change: отзываем все активные сессии,
+      // чтобы старые refresh-токены перестали действовать.
+      await this.sessionService.deactivateAll(userId);
 
       this.logger.log(`🔐 [PASSWORD] Changed for user ${userId}`);
       return {
@@ -911,6 +968,25 @@ export class AuthService {
         });
       }
 
+      // Аудит смены Telegram: логируем старые данные в JSON
+      if (user.telegramId && user.telegramId !== telegramId) {
+        await this.prismaService.telegramIdentityAudit.create({
+          data: {
+            userId,
+            eventType: 'telegram_changed',
+            previousData: {
+              telegramId: user.telegramId,
+              telegramUsername: user.telegramUsername,
+              telegramFirstName: user.telegramFirstName,
+              telegramLastName: user.telegramLastName,
+              telegramPhotoUrl: user.telegramPhotoUrl,
+              isTelegramVerified: user.isTelegramVerified,
+              changedAt: new Date().toISOString(),
+            },
+          },
+        });
+      }
+
       // Проверяем, что новый Telegram ID не занят другим пользователем
       if (user.telegramId !== telegramId) {
         const existingTelegramUser = await this.prismaService.user.findUnique({
@@ -925,23 +1001,18 @@ export class AuthService {
         }
       }
 
-      // Генерируем Oracle username на основе Telegram данных
-      const oracleUsername = this.oracleUsernameService.generateOracleUsername(
-        telegramId,
-        username,
+      // Генерируем User username на основе Telegram данных
+      const baseUserUsername =
+        this.usernameService.generateUsername(
+          telegramId,
+          username,
+        );
+
+      // Резолвим уникальный User username (стабильный fallback при конфликте)
+      const resolvedUsername = await this.resolveUniqueUserUsername(
+        baseUserUsername,
+        userId,
       );
-
-      // Проверяем, что новый Oracle username не занят другим пользователем
-      const existingOracleUser = await this.prismaService.user.findUnique({
-        where: { oracleUsername: oracleUsername },
-      });
-
-      if (existingOracleUser && existingOracleUser.id !== userId) {
-        throw new RpcException({
-          code: status.ALREADY_EXISTS,
-          message: 'Oracle username is already taken by another user',
-        });
-      }
 
       // Обновляем Telegram данные
       await this.prismaService.user.update({
@@ -953,7 +1024,7 @@ export class AuthService {
           telegramLastName: lastName,
           telegramPhotoUrl: photoUrl,
           isTelegramVerified: true,
-          oracleUsername: oracleUsername, // Автоматически синхронизируем Oracle username
+          username: resolvedUsername, // Автоматически синхронизируем User username
         },
       });
 
@@ -1101,39 +1172,42 @@ export class AuthService {
       }
 
       // 4. Проверяем, что у пользователя еще нет реального email
-      if (user.email && !user.email.startsWith('tg_')) {
+      if (user.origin === 'email') {
         throw new RpcException({
           code: status.ALREADY_EXISTS,
           message: 'User already has a real email address linked',
         });
       }
 
-      // 5. Проверяем, что новый email не занят другим пользователем
-      const existingEmailUser = await this.prismaService.user.findUnique({
-        where: { email: email.toLowerCase() },
-      });
-
-      if (existingEmailUser && existingEmailUser.id !== userId) {
-        throw new RpcException({
-          code: status.ALREADY_EXISTS,
-          message: 'Email address is already in use',
+      // 5-7. Атомарная операция linking (проверка уникальности + запись в одной
+      // транзакции, приоритет linking над фоновой sync — §5.1). При конкурентном
+      // занятии email уникальный индекс даёт P2002 -> ALREADY_EXISTS.
+      await this.prismaService.$transaction(async (tx) => {
+        const existingEmailUser = await tx.user.findUnique({
+          where: { email: email.toLowerCase() },
         });
-      }
 
-      // 6. Хешируем пароль
-      const saltRounds = 12;
-      const hashedPassword = await bcrypt.hash(password, saltRounds);
+        if (existingEmailUser && existingEmailUser.id !== userId) {
+          throw new RpcException({
+            code: status.ALREADY_EXISTS,
+            message: 'Email address is already in use',
+          });
+        }
 
-      // 7. Обновляем пользователя с новым email и паролем
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          email: email.toLowerCase(),
-          password: hashedPassword,
-          passwordChangedAt: new Date(),
-          isEmailVerified: false, // Требует верификации
-          emailVerificationToken: crypto.randomBytes(32).toString('hex'),
-        },
+        const saltRounds = BCRYPT_COST;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            email: email.toLowerCase(),
+            password: hashedPassword,
+            passwordChangedAt: new Date(),
+            isEmailVerified: false, // Требует верификации
+            emailVerificationToken: crypto.randomBytes(32).toString('hex'),
+            origin: 'email', // Аккаунт получил email-identity
+          },
+        });
       });
 
       this.logger.log(
@@ -1159,12 +1233,12 @@ export class AuthService {
     }
   }
 
-  async syncOracleUsername(
-    data: SyncOracleUsernameRequest,
-  ): Promise<SyncOracleUsernameResponse> {
+  async syncUsername(
+    data: SyncUsernameRequest,
+  ): Promise<SyncUsernameResponse> {
     const { userId } = data;
 
-    this.logger.log(`🔄 [ORACLE] SYNC request received for user ${userId}`);
+    this.logger.log(`🔄 [USER] SYNC request received for user ${userId}`);
 
     try {
       // 1. Валидация входных данных
@@ -1192,63 +1266,54 @@ export class AuthService {
         throw new RpcException({
           code: status.FAILED_PRECONDITION,
           message:
-            'Telegram account is not linked. Cannot sync Oracle username.',
+            'Telegram account is not linked. Cannot sync User username.',
         });
       }
 
-      // 4. Генерируем новый Oracle username на основе текущих Telegram данных
-      const newOracleUsername =
-        this.oracleUsernameService.generateOracleUsername(
+      // 4. Генерируем новый User username на основе текущих Telegram данных
+      const baseUserUsername =
+        this.usernameService.generateUsername(
           user.telegramId,
           user.telegramUsername || undefined,
         );
 
-      // 5. Проверяем, что новый username не занят другим пользователем
-      if (newOracleUsername !== user.oracleUsername) {
-        const existingUser = await this.prismaService.user.findUnique({
-          where: { oracleUsername: newOracleUsername },
-        });
+      // 5. Резолвим уникальный User username (стабильный fallback при конфликте)
+      const newUserUsername = await this.resolveUniqueUserUsername(
+        baseUserUsername,
+        userId,
+      );
 
-        if (existingUser && existingUser.id !== userId) {
-          // Генерируем альтернативные username
-          const alternatives =
-            await this.oracleIdentityService.generateUsernameAlternatives(
-              newOracleUsername,
-              userId,
-              5,
-            );
-
-          throw new RpcException({
-            code: status.ALREADY_EXISTS,
-            message: 'Oracle username is already taken by another user',
-            details: JSON.stringify({
-              hasAlternatives: alternatives.length > 0,
-              alternativeUsernames: alternatives,
-            }),
-          });
-        }
+      // 5.1 Резервируем освободившийся username на grace period (§2.3)
+      if (
+        user.username &&
+        user.username !== newUserUsername
+      ) {
+        await this.usernameService.reserveUsername(
+          userId,
+          user.username,
+        );
       }
 
-      // 6. Обновляем Oracle username
+      // 6. Обновляем User username
       await this.prismaService.user.update({
         where: { id: userId },
         data: {
-          oracleUsername: newOracleUsername,
+          username: newUserUsername,
         },
       });
 
       this.logger.log(
-        `✅ [ORACLE] Successfully synced Oracle username to ${newOracleUsername} for user ${userId}`,
+        `✅ [USER] Successfully synced User username to ${newUserUsername} for user ${userId}`,
       );
 
       return {
         success: true,
-        message: 'Oracle username synchronized successfully',
-        oracleUsername: newOracleUsername,
+        message: 'User username synchronized successfully',
+        username: newUserUsername,
       };
     } catch (error) {
       this.logger.error(
-        `Oracle username sync error: ${(error as Error).message}`,
+        `User username sync error: ${(error as Error).message}`,
       );
 
       if (error instanceof RpcException) {
@@ -1257,46 +1322,46 @@ export class AuthService {
 
       throw new RpcException({
         code: status.INTERNAL,
-        message: 'Failed to sync Oracle username',
+        message: 'Failed to sync User username',
       });
     }
   }
 
-  // Oracle identity management methods
-  async changeOracleUsername(
-    data: ChangeOracleUsernameRequest,
-  ): Promise<ChangeOracleUsernameResponse> {
+  // User identity management methods
+  async changeUsername(
+    data: ChangeUsernameRequest,
+  ): Promise<ChangeUsernameResponse> {
     try {
       const { userId, newUsername } = data;
 
-      this.logger.log(`🔄 [ORACLE] Username change request for user ${userId}`);
+      this.logger.log(`🔄 [USER] Username change request for user ${userId}`);
 
-      // Проверяем, может ли пользователь изменить Oracle Username
+      // Проверяем, может ли пользователь изменить User Username
       const canChange =
-        await this.oracleIdentityService.canChangeOracleUsername(userId);
+        await this.userIdentityService.canChangeUsername(userId);
       if (!canChange.canChange) {
         throw new RpcException({
           code: status.FAILED_PRECONDITION,
-          message: canChange.reason || 'Cannot change Oracle username',
+          message: canChange.reason || 'Cannot change User username',
         });
       }
 
       const updatedUsername =
-        await this.oracleIdentityService.changeOracleUsername(
+        await this.userIdentityService.changeUsername(
           userId,
           newUsername,
         );
 
       return {
         success: true,
-        message: 'Oracle username changed successfully',
-        oracleUsername: updatedUsername,
+        message: 'User username changed successfully',
+        username: updatedUsername,
         hasAlternatives: false,
         alternativeUsernames: [],
       };
     } catch (error) {
       this.logger.error(
-        `Oracle username change error: ${(error as Error).message}`,
+        `User username change error: ${(error as Error).message}`,
       );
 
       if (error instanceof RpcException) {
@@ -1305,33 +1370,33 @@ export class AuthService {
 
       throw new RpcException({
         code: status.INTERNAL,
-        message: 'Failed to change Oracle username',
+        message: 'Failed to change User username',
       });
     }
   }
 
-  async changeOracleNickName(
-    data: ChangeOracleNickNameRequest,
-  ): Promise<ChangeOracleNickNameResponse> {
+  async changeNickname(
+    data: ChangeNicknameRequest,
+  ): Promise<ChangeNicknameResponse> {
     try {
       const { userId, newNickname } = data;
 
-      this.logger.log(`🔄 [ORACLE] NickName change request for user ${userId}`);
+      this.logger.log(`🔄 [USER] NickName change request for user ${userId}`);
 
       const updatedNickName =
-        await this.oracleIdentityService.changeOracleNickName(
+        await this.userIdentityService.changeNickname(
           userId,
           newNickname,
         );
 
       return {
         success: true,
-        message: 'Oracle nickname changed successfully',
-        oracleNickname: updatedNickName,
+        message: 'User nickname changed successfully',
+        nickname: updatedNickName,
       };
     } catch (error) {
       this.logger.error(
-        `Oracle nickname change error: ${(error as Error).message}`,
+        `User nickname change error: ${(error as Error).message}`,
       );
 
       if (error instanceof RpcException) {
@@ -1340,32 +1405,35 @@ export class AuthService {
 
       throw new RpcException({
         code: status.INTERNAL,
-        message: 'Failed to change Oracle nickname',
+        message: 'Failed to change User nickname',
       });
     }
   }
 
-  async getOracleIdentity(
-    data: GetOracleIdentityRequest,
-  ): Promise<GetOracleIdentityResponse> {
+  async changeTelegramUsername(
+    data: ChangeTelegramUsernameRequest,
+  ): Promise<ChangeTelegramUsernameResponse> {
     try {
-      const { userId } = data;
+      const { userId, telegramUsername } = data;
 
-      this.logger.log(`🔄 [ORACLE] Identity request for user ${userId}`);
+      this.logger.log(
+        `🔄 [USER] Telegram username change request for user ${userId}`,
+      );
 
-      const identity =
-        await this.oracleIdentityService.getOracleIdentity(userId);
+      const updated =
+        await this.userIdentityService.changeTelegramUsername(
+          userId,
+          telegramUsername,
+        );
 
       return {
         success: true,
-        message: 'Oracle identity retrieved successfully',
-        userId: identity.userId,
-        oracleUsername: identity.oracleUsername || '',
-        oracleNickname: identity.oracleNickName || '',
+        message: 'User telegram username changed successfully',
+        telegramUsername: updated,
       };
     } catch (error) {
       this.logger.error(
-        `Oracle identity retrieval error: ${(error as Error).message}`,
+        `User telegram username change error: ${(error as Error).message}`,
       );
 
       if (error instanceof RpcException) {
@@ -1374,23 +1442,127 @@ export class AuthService {
 
       throw new RpcException({
         code: status.INTERNAL,
-        message: 'Failed to get Oracle identity',
+        message: 'Failed to change User telegram username',
+      });
+    }
+  }
+
+  async changeAvatar(
+    data: ChangeAvatarRequest,
+  ): Promise<ChangeAvatarResponse> {
+    try {
+      const { userId, photoBase64 } = data;
+
+      this.logger.log(`🔄 [USER] Avatar change request for user ${userId}`);
+
+      await this.userIdentityService.changeAvatar(userId, photoBase64);
+
+      return {
+        success: true,
+        message: 'User avatar changed successfully',
+      };
+    } catch (error) {
+      this.logger.error(
+        `User avatar change error: ${(error as Error).message}`,
+      );
+
+      if (error instanceof RpcException) {
+        throw error;
+      }
+
+      throw new RpcException({
+        code: status.INTERNAL,
+        message: 'Failed to change User avatar',
+      });
+    }
+  }
+
+  async getUserIdentity(
+    data: GetUserIdentityRequest,
+  ): Promise<GetUserIdentityResponse> {
+    try {
+      const { userId } = data;
+
+      this.logger.log(`🔄 [USER] Identity request for user ${userId}`);
+
+      const identity =
+        await this.userIdentityService.getUserIdentity(userId);
+
+      return {
+        success: true,
+        message: 'User identity retrieved successfully',
+        userId: identity.userId,
+        username: identity.username || '',
+        nickname: identity.nickname || '',
+      };
+    } catch (error) {
+      this.logger.error(
+        `User identity retrieval error: ${(error as Error).message}`,
+      );
+
+      if (error instanceof RpcException) {
+        throw error;
+      }
+
+      throw new RpcException({
+        code: status.INTERNAL,
+        message: 'Failed to get User identity',
+      });
+    }
+  }
+
+  async getUserProfile(
+    data: GetUserProfileRequest,
+  ): Promise<GetUserProfileResponse> {
+    try {
+      const { userId } = data;
+
+      this.logger.log(`🔄 [USER] Profile request for user ${userId}`);
+
+      const profile = await this.userIdentityService.getUserProfile(userId);
+
+      return {
+        success: true,
+        message: 'User profile retrieved successfully',
+        userId: profile.userId,
+        email: profile.email,
+        username: profile.username,
+        nickname: profile.nickname,
+        photoBase64: profile.photoBase64,
+        telegramUsername: profile.telegramUsername,
+        telegramId: profile.telegramId,
+        telegramPhotoUrl: profile.telegramPhotoUrl,
+        origin: profile.origin,
+        isTelegramVerified: profile.isTelegramVerified,
+      };
+    } catch (error) {
+      this.logger.error(
+        `User profile retrieval error: ${(error as Error).message}`,
+      );
+
+      if (error instanceof RpcException) {
+        throw error;
+      }
+
+      throw new RpcException({
+        code: status.INTERNAL,
+        message: 'Failed to get User profile',
       });
     }
   }
 
   async suggestUsernameAlternatives(
-    data: SuggestOracleUsernameAlternativesRequest,
-  ): Promise<SuggestOracleUsernameAlternativesResponse> {
+    data: SuggestUsernameAlternativesRequest,
+  ): Promise<SuggestUsernameAlternativesResponse> {
     try {
       const { userId, desiredUsername, maxAlternatives } = data;
 
       this.logger.log(
-        `🔄 [ORACLE] Username alternatives request for user ${userId}, desired: ${desiredUsername}`,
+        `🔄 [USER] Username alternatives request for user ${userId}, desired: ${desiredUsername}`,
       );
 
       const alternatives =
-        await this.oracleIdentityService.suggestUsernameAlternatives(
+        await this.userIdentityService.suggestUsernameAlternatives(
           userId,
           desiredUsername,
           maxAlternatives || 5,
@@ -1415,5 +1587,135 @@ export class AuthService {
         message: 'Failed to suggest username alternatives',
       });
     }
+  }
+
+  /**
+   * Возвращает свободный User username для заданного User ID:
+   * - точное имя, если свободно или уже принадлежит этому пользователю;
+   * - иначе стабильный детерминированный fallback `<username>_<короткий суффикс User ID>`.
+   * Конфликт имени не ломает login/linking (TG-03). Имя, активное в grace period
+   * за другим User ID, считается недоступным (§2.3).
+   */
+  private async resolveUniqueUserUsername(
+    baseUsername: string,
+    userId: string,
+  ): Promise<string> {
+    const existing = await this.prismaService.user.findUnique({
+      where: { username: baseUsername },
+    });
+    if (!existing || existing.id === userId) {
+      const reserved = await this.usernameService.isUsernameReservedByOther(
+        baseUsername,
+        userId,
+      );
+      if (reserved) {
+        const idDigits = userId.replace(/-/g, '');
+        return this.usernameService.generateAlternativeUsername(
+          baseUsername,
+          idDigits.slice(0, 4).toLowerCase(),
+        );
+      }
+      return baseUsername;
+    }
+
+    const idDigits = userId.replace(/-/g, '');
+    const suffix = idDigits.slice(0, 4).toLowerCase();
+    const fallback = this.usernameService.generateAlternativeUsername(
+      baseUsername,
+      suffix,
+    );
+
+    const existingFallback = await this.prismaService.user.findUnique({
+      where: { username: fallback },
+    });
+    if (!existingFallback || existingFallback.id === userId) {
+      return fallback;
+    }
+
+    const fallback2 =
+      this.usernameService.generateAlternativeUsername(
+        baseUsername,
+        idDigits.slice(0, 8).toLowerCase(),
+      );
+    return fallback2;
+  }
+
+  /**
+   * Решение администратора по recovery-запросу (§6.3). При approved запрос
+   * переводится в granted и выдаётся ограниченный recovery grant с TTL.
+   */
+  async resolveRecoveryRequest(
+    requestId: string,
+    decision: 'approved' | 'rejected' | 'cancelled' | 'needs_review',
+    decidedBy: string,
+    reason?: string,
+  ): Promise<{
+    success: boolean;
+    status: string;
+    grantToken?: string;
+    message: string;
+  }> {
+    const request = await this.prismaService.recoveryRequest.findUnique({
+      where: { id: requestId },
+    });
+    if (!request) {
+      throw new RpcException({
+        code: status.NOT_FOUND,
+        message: 'Recovery request not found',
+      });
+    }
+
+    if (decision === 'approved') {
+      const grantTtlSeconds = this.configService.get<number>(
+        'RECOVERY_GRANT_TTL_SECONDS',
+        24 * 60 * 60,
+      );
+      const grantExpiresAt = new Date(
+        Date.now() + grantTtlSeconds * 1000,
+      );
+
+      await this.prismaService.recoveryRequest.update({
+        where: { id: requestId },
+        data: {
+          status: 'granted',
+          decidedBy,
+          decidedAt: new Date(),
+          reason,
+          grantExpiresAt,
+        },
+      });
+
+      const grantToken = await this.jwtService.signAsync(
+        {
+          sub: request.userId,
+          typ: 'recovery_grant',
+          rid: requestId,
+        },
+        { expiresIn: grantTtlSeconds },
+      );
+
+      return {
+        success: true,
+        status: 'granted',
+        grantToken,
+        message: 'Recovery grant issued',
+      };
+    }
+
+    await this.prismaService.recoveryRequest.update({
+      where: { id: requestId },
+      data: {
+        status: decision,
+        decidedBy,
+        decidedAt: new Date(),
+        reason: reason ?? null,
+      },
+    });
+
+    return {
+      success: true,
+      status: decision,
+      message: `Recovery request ${decision}`,
+    };
   }
 }

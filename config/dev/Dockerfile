@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
 COPY package*.json ./
 
 # Устанавливаем зависимости (включая dev)
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 # Копируем исходный код
 COPY . .

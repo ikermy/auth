@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
+import { EventType, Severity } from '../../generated/prisma';
 
 interface UserCheckResult {
   telegramWithoutEmail: number;
@@ -36,6 +37,10 @@ export class UserMonitoringService {
 
       // Здесь можно добавить отправку уведомлений или логирование в внешнюю систему
       await this.logUserCheckResults(result);
+
+      // Бизнес-действие: фиксируем проблемы как security-события (мониторинг не
+      // должен быть только логом количества пользователей — §12)
+      await this.recordIssueEvents();
     } catch (error) {
       this.logger.error(
         `❌ Daily user check failed: ${(error as Error).message}`,
@@ -130,6 +135,47 @@ export class UserMonitoringService {
     // - Сохранение в таблицу мониторинга
     // - Отправку уведомлений администраторам
     // - Интеграцию с внешними системами мониторинга
+  }
+
+  // Создаёт security-события для проблем, выявленных мониторингом.
+  // Превращает «просто лог количества» в полезное доменное действие.
+  private async recordIssueEvents(): Promise<void> {
+    try {
+      const issues = await this.getUsersWithIssues();
+
+      const records: { userId: string; type: string }[] = [
+        ...issues.inactiveSeedUsers.map((u: any) => ({
+          userId: u.id,
+          type: 'stale_recovery_phrase',
+        })),
+        ...issues.telegramWithoutEmail.map((u: any) => ({
+          userId: u.id,
+          type: 'telegram_without_email',
+        })),
+      ];
+
+      for (const record of records) {
+        await this.prismaService.securityEvent.create({
+          data: {
+            userId: record.userId,
+            eventType: EventType.SUSPICIOUS_ACTIVITY,
+            severity: Severity.MEDIUM,
+            description: `User monitoring: ${record.type}`,
+            metadata: { source: 'user_monitoring', type: record.type },
+          },
+        });
+      }
+
+      if (records.length > 0) {
+        this.logger.log(
+          `📝 Recorded ${records.length} monitoring security events`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to record monitoring events: ${(error as Error).message}`,
+      );
+    }
   }
 
   // Метод для ручного запуска проверки (для тестирования)

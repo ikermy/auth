@@ -1,12 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { EventType, Severity } from '../../generated/prisma';
+import { KafkaProducerService } from './services/kafka-producer.service';
 
 @Injectable()
 export class SecurityLoggerService {
   private readonly logger = new Logger(SecurityLoggerService.name);
 
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    @Optional() private readonly kafkaProducer?: KafkaProducerService,
+  ) {}
 
   // Логирование подозрительной активности
   async logSuspiciousActivity(
@@ -41,7 +45,7 @@ export class SecurityLoggerService {
         eventType: EventType.SUSPICIOUS_ACTIVITY,
         description: reason,
         severity: Severity.MEDIUM,
-        userId: 'system',
+        userId: null,
       },
     });
   }
@@ -57,7 +61,7 @@ export class SecurityLoggerService {
         eventType: EventType.SUCCESS,
         description: 'Successful request',
         severity: Severity.LOW,
-        userId: 'system',
+        userId: null,
       },
     });
   }
@@ -78,7 +82,7 @@ export class SecurityLoggerService {
         eventType: EventType.ERROR,
         description: error,
         severity: Severity.MEDIUM,
-        userId: 'system',
+        userId: null,
       },
     });
   }
@@ -92,7 +96,7 @@ export class SecurityLoggerService {
         eventType: EventType.RATE_LIMIT_EXCEEDED,
         description: 'Rate limit exceeded',
         severity: Severity.MEDIUM,
-        userId: 'system',
+        userId: null,
       },
     });
   }
@@ -160,6 +164,16 @@ export class SecurityLoggerService {
             metadata: { success, email },
           },
         });
+
+        // Уведомление о значимом событии (§9.12)
+        await this.kafkaProducer?.publish({
+          type: 'AUTH_ATTEMPT',
+          userId: user.id,
+          success,
+          email,
+          ip,
+          timestamp: new Date().toISOString(),
+        });
       }
     } catch (error) {
       this.logger.error(
@@ -197,6 +211,16 @@ export class SecurityLoggerService {
             metadata: { success, email },
           },
         });
+
+        // Уведомление о значимом событии (§9.12)
+        await this.kafkaProducer?.publish({
+          type: 'REGISTRATION',
+          userId: user.id,
+          success,
+          email,
+          ip,
+          timestamp: new Date().toISOString(),
+        });
       }
     } catch (error) {
       this.logger.error(
@@ -216,7 +240,7 @@ export class SecurityLoggerService {
     try {
       await this.prismaService.securityEvent.create({
         data: {
-          userId: 'system', // Для системных событий
+          userId: null, // Для системных событий
           eventType: EventType.TOKEN_REFRESH,
           severity: success ? Severity.LOW : Severity.MEDIUM,
           description: `${status} token refresh from IP: ${ip}`,

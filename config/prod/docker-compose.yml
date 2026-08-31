@@ -1,139 +1,100 @@
+# =============================================================================
+# docker-compose.yml — Auth Microservice: PROD-версия (config/prod)
+#
+# Auth — часть семейства микросервисов. Использует общую сеть barcode-shared и
+# общие PostgreSQL/Redis/Kafka/envoy оркестратора bff. Собственные db/redis не
+# поднимаются. Сборка на production-стадии (config/prod/Dockerfile).
+#
+# Запуск (из корня auth, bff должен быть поднят):
+#   docker compose -f config/prod/docker-compose.yml up -d
+# =============================================================================
+
 services:
   app:
-    container_name: auth_app_prod
-    image: auth_app:prod
+    container_name: auth_app
+    image: "${AUTH_IMAGE:-auth:prod}"
     build:
       context: ../../
       dockerfile: config/prod/Dockerfile
-    restart: always
+      target: production
+    restart: unless-stopped
     env_file:
-      - ../prod/.env.example
+      - path: ../../.env
+        required: false
+    environment:
+      GRPC_URL: "${GRPC_URL:-0.0.0.0:50051}"
+      GRPC_PACKAGE: "${GRPC_PACKAGE:-auth}"
+      # Общие ресурсы из bff
+      DATABASE_URL: "${DATABASE_URL:-postgresql://billing:billing@postgres:5432/auth_db}"
+      REDIS_HOST: "${REDIS_HOST:-redis}"
+      REDIS_PORT: "${REDIS_PORT:-6379}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      KAFKA_BROKERS: "${KAFKA_BROKERS:-kafka:9092}"
+      JWT_SUPER_SECRET_WORD: "${JWT_SUPER_SECRET_WORD:?JWT_SUPER_SECRET_WORD is required}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}"
+      # Реальный токен бота обязателен в проде, иначе Auth отклоняет все входы через Telegram
+      # ("TELEGRAM_BOT_TOKEN is not configured"). Задаётся из secrets.TELEGRAM_BOT_TOKEN в cd-pipeline.
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}"
+      TLS_ENABLED: "${TLS_ENABLED:-false}"
     ports:
       - "50051:50051"
-    networks:
-      - auth_network
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 2G
-        reservations:
-          cpus: '1.0'
-          memory: 1G
     healthcheck:
-      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      test: ["CMD", "nc", "-z", "localhost", "50051"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-
-  db:
-    container_name: auth_db_prod
-    image: postgres:15
-    restart: always
-    env_file:
-      - ../prod/.env.example
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ../../database/init:/docker-entrypoint-initdb.d:ro
-      - ../../database/backups:/backups:ro
-    networks:
-      - auth_network
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}"]
-      interval: 10s
-      retries: 5
-      start_period: 30s
-      timeout: 5s
     deploy:
       resources:
         limits:
           cpus: '2.0'
-          memory: 4G
-        reservations:
-          cpus: '1.0'
           memory: 2G
-
-  redis:
-    container_name: auth_redis_prod
-    image: redis:7-alpine
-    restart: always
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - auth_network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      retries: 5
-      start_period: 30s
-      timeout: 5s
-    deploy:
-      resources:
-        limits:
+        reservations:
           cpus: '1.0'
           memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
+    networks:
+      barcode-shared:
+        aliases:
+          - auth
+          - auth-service
 
-  # Production monitoring with Prometheus
+  # ── Observability (необязательно, в общей сети платформы) ─────────────
   prometheus:
-    container_name: auth_prometheus_prod
+    container_name: auth_prometheus
     image: prom/prometheus:latest
-    restart: always
+    restart: unless-stopped
     ports:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
-    networks:
-      - auth_network
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
       - '--storage.tsdb.retention.time=200h'
       - '--web.enable-lifecycle'
+    networks:
+      - barcode-shared
 
-  # Grafana for monitoring dashboards
   grafana:
-    container_name: auth_grafana_prod
+    container_name: auth_grafana
     image: grafana/grafana:latest
-    restart: always
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
     volumes:
       - grafana_data:/var/lib/grafana
     networks:
-      - auth_network
+      - barcode-shared
 
 volumes:
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local
   prometheus_data:
-    driver: local
   grafana_data:
-    driver: local
 
 networks:
-  auth_network:
-    driver: bridge
+  # Общая сеть платформы (docker network create barcode_shared)
+  barcode-shared:
+    external: true
+    name: barcode_shared

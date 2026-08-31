@@ -44,8 +44,10 @@ export class SecureAuthService {
         await new Promise((resolve) => setTimeout(resolve, 51 - elapsed));
       }
 
-      // Возвращаем успех только если пользователь найден И пароль верен
-      const success = user !== null && isPasswordValid;
+      // Возвращаем успех только если пользователь найден, пароль верен
+      // и аккаунт активен (STATE-01: isActive=false блокирует все входы).
+      const success =
+        user !== null && isPasswordValid && user.isActive !== false;
 
       return {
         success,

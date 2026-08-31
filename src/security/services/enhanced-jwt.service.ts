@@ -4,14 +4,20 @@ import { ConfigService } from '@nestjs/config';
 import { createClient, RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
 import { SecurityLoggerService } from '../security-logger.service';
+import { SessionService } from './session.service';
 
 interface JwtPayload {
   sub: string;
   email: string;
   jti: string; // JWT ID для отзыва токенов
   iat: number;
-  exp: number;
+  exp?: number;
   type: 'access' | 'refresh';
+}
+
+export interface GenerateTokensOptions {
+  ipAddress?: string;
+  userAgent?: string | null;
 }
 
 @Injectable()
@@ -22,6 +28,7 @@ export class EnhancedJwtService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly securityLogger: SecurityLoggerService,
+    private readonly sessionService: SessionService,
   ) {}
 
   async onModuleInit() {
@@ -84,11 +91,13 @@ export class EnhancedJwtService {
   async generateTokens(
     userId: string,
     email: string,
+    options?: GenerateTokensOptions,
   ): Promise<{
     accessToken: string;
     refreshToken: string;
     accessTokenId: string;
     refreshTokenId: string;
+    sessionId: string;
   }> {
     try {
       // Валидация входных данных
@@ -108,7 +117,6 @@ export class EnhancedJwtService {
         email,
         jti: accessTokenId,
         iat: Math.floor(Date.now() / 1000),
-        exp: Math.floor(Date.now() / 1000) + 15 * 60, // 15 минут
         type: 'access',
       };
 
@@ -117,13 +125,12 @@ export class EnhancedJwtService {
         email,
         jti: refreshTokenId,
         iat: Math.floor(Date.now() / 1000),
-        exp: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60, // 7 дней
         type: 'refresh',
       };
 
       const [accessToken, refreshToken] = await Promise.all([
-        this.jwtService.signAsync(accessPayload),
-        this.jwtService.signAsync(refreshPayload),
+        this.jwtService.signAsync(accessPayload, { expiresIn: 15 * 60 }),
+        this.jwtService.signAsync(refreshPayload, { expiresIn: 7 * 24 * 60 * 60 }),
       ]);
 
       // Сохраняем метаданные токенов в Redis
@@ -145,6 +152,16 @@ export class EnhancedJwtService {
         // Продолжаем выполнение, так как токены уже созданы
       }
 
+      // Регистрируем сессию в БД (привязка refresh к активной сессии)
+      const session = await this.sessionService.create({
+        userId,
+        accessTokenJti: accessTokenId,
+        refreshTokenJti: refreshTokenId,
+        ipAddress: options?.ipAddress || 'unknown',
+        userAgent: options?.userAgent ?? null,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+
       this.securityLogger.logJwtEvent(
         'tokens_generated',
         `User: ${userId}, Access JTI: ${accessTokenId}`,
@@ -155,6 +172,7 @@ export class EnhancedJwtService {
         refreshToken,
         accessTokenId,
         refreshTokenId,
+        sessionId: session.id,
       };
     } catch (error) {
       this.securityLogger.logSecurityError(

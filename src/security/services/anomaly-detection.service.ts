@@ -169,8 +169,10 @@ export class AnomalyDetectionService {
       factors.push(...successScore.factors);
     }
 
-    // Нормализуем score до 0-1
-    const normalizedScore = Math.min(score / 5, 1);
+    // Нормализуем score до 0-1. Делитель равен числу анализируемых блоков;
+    // суммарный максимум (~2.8) / 4 делает порог 0.7 достижимым при полном
+    // наборе подозрительных факторов (ANOM-1).
+    const normalizedScore = Math.min(score / 4, 1);
 
     const result: AnomalyScore = {
       score: normalizedScore,
@@ -309,7 +311,7 @@ export class AnomalyDetectionService {
     const factors: string[] = [];
     let score = 0;
 
-    const hour = timestamp.getHours();
+    const hour = timestamp.getUTCHours();
 
     // Активность в необычное время (2-6 утра)
     if (hour >= 2 && hour <= 6) {

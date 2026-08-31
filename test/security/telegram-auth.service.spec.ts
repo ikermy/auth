@@ -5,8 +5,8 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
-import { OracleUsernameService } from '../../src/auth/services/oracle-username.service';
-import { OracleIdentityService } from '../../src/auth/services/oracle-identity.service';
+import { UsernameService } from '../../src/auth/services/username.service';
+import { UserIdentityService } from '../../src/auth/services/user-identity.service';
 import { HttpService } from '@nestjs/axios';
 import * as crypto from 'crypto';
 
@@ -35,6 +35,7 @@ describe('TelegramAuthService', () => {
       create: jest.fn(),
       update: jest.fn(),
     },
+    $transaction: jest.fn(),
   } as any;
 
   const mockJwtService = {
@@ -63,21 +64,23 @@ describe('TelegramAuthService', () => {
           useValue: mockConfigService,
         },
         {
-          provide: OracleUsernameService,
+          provide: UsernameService,
           useValue: {
-            generateOracleUsername: jest.fn(),
-            isValidOracleUsername: jest.fn(),
-            normalizeOracleUsername: jest.fn(),
-            generateAlternativeOracleUsername: jest.fn(),
+            generateUsername: jest.fn(),
+            isValidUsername: jest.fn(),
+            normalizeUsername: jest.fn(),
+            generateAlternativeUsername: jest.fn(),
+            reserveUsername: jest.fn(),
+            isUsernameReservedByOther: jest.fn(),
           },
         },
         {
-          provide: OracleIdentityService,
+          provide: UserIdentityService,
           useValue: {
-            getOracleIdentity: jest.fn(),
-            changeOracleUsername: jest.fn(),
-            changeOracleNickName: jest.fn(),
-            canChangeOracleUsername: jest.fn(),
+            getUserIdentity: jest.fn(),
+            changeUsername: jest.fn(),
+            changeNickname: jest.fn(),
+            canChangeUsername: jest.fn(),
             suggestUsernameAlternatives: jest.fn(),
             generateUsernameAlternatives: jest.fn(),
           },
@@ -234,13 +237,20 @@ describe('TelegramAuthService', () => {
     };
 
     it('should link telegram account to existing user', async () => {
-      // Первый вызов: проверка, не занят ли Telegram ID
-      (prismaService.user.findUnique as jest.Mock)
-        .mockResolvedValueOnce(null) // Telegram ID не занят
-        .mockResolvedValueOnce({ id: 'user-id' } as any); // Пользователь существует
-      (prismaService.user.update as jest.Mock).mockResolvedValue({
+      // Проверка существования пользователя (до транзакции)
+      (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
         id: 'user-id',
       } as any);
+      // Транзакция: внутри проверяем занятость Telegram ID (null) и обновляем
+      (prismaService.$transaction as jest.Mock).mockImplementation(
+        async (cb: any) =>
+          cb({
+            user: {
+              findUnique: jest.fn().mockResolvedValue(null),
+              update: jest.fn().mockResolvedValue({ id: 'user-id' }),
+            },
+          }),
+      );
 
       const result = await service.linkTelegramToExistingAccount(
         'user-id',
@@ -248,13 +258,22 @@ describe('TelegramAuthService', () => {
       );
 
       expect(result).toBe(true);
-      expect(prismaService.user.update).toHaveBeenCalled();
     });
 
     it('should reject when telegram account is already linked to another user', async () => {
-      const existingUser = { id: 'other-user-id' };
-      (prismaService.user.findUnique as jest.Mock).mockResolvedValue(
-        existingUser as any,
+      // Пользователь существует
+      (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
+        id: 'user-id',
+      } as any);
+      // В транзакции находим, что Telegram ID занят другим
+      (prismaService.$transaction as jest.Mock).mockImplementation(
+        async (cb: any) =>
+          cb({
+            user: {
+              findUnique: jest.fn().mockResolvedValue({ id: 'other-user-id' }),
+              update: jest.fn(),
+            },
+          }),
       );
 
       await expect(

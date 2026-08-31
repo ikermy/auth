@@ -1,40 +1,40 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { GrpcMetadataInterceptor } from '../interceptors/grpc-metadata.interceptor';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
+import { ServiceAccessController } from './service-access.controller';
 import { TelegramAuthService } from './telegram-auth.service';
-import { OracleUsernameService } from './services/oracle-username.service';
-import { OracleIdentityService } from './services/oracle-identity.service';
-import { JwtModule } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
-import { PrismaService } from '../prisma.service';
+import { UsernameService } from './services/username.service';
+import { UserIdentityService } from './services/user-identity.service';
 import { SecurityModule } from '../security/security.module';
 import { HttpModule } from '@nestjs/axios';
+import { GrpcAuthGuard } from './guards/grpc-auth.guard';
+// GrpcExceptionFilter временно не подключён как APP_FILTER: бросок RpcException
+// из catch в gRPC (watch) даёт connection dropped вместо кода ошибки.
 
 @Module({
   imports: [
-    JwtModule.registerAsync({
-      useFactory: (configService: ConfigService) => ({
-        global: true,
-        secret: configService.getOrThrow<string>('JWT_SUPER_SECRET_WORD'),
-        signOptions: {
-          expiresIn: configService.getOrThrow<string>('JWT_EXPIRES_IN'),
-        },
-      }),
-      inject: [ConfigService],
-    }),
     HttpModule.register({
       timeout: 10000, // 10 секунд таймаут для HTTP запросов
       maxRedirects: 3,
     }),
     SecurityModule,
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, ServiceAccessController],
   providers: [
     AuthService,
     TelegramAuthService,
-    OracleUsernameService,
-    OracleIdentityService,
-    PrismaService,
+    UsernameService,
+    UserIdentityService,
+    {
+      provide: APP_GUARD,
+      useClass: GrpcAuthGuard,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: GrpcMetadataInterceptor,
+    },
   ],
 })
 export class AuthModule {}

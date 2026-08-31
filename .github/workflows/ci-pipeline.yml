@@ -33,7 +33,7 @@ jobs:
               run: npm run proto:gen
 
             - name: Build application
-              run: 
+              run: |
                 echo "Run command to build the application if present"
                 npm run build
 

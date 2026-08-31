@@ -63,4 +63,3 @@ generated
 .eslintrc*
 .prettierrc*
 jest.config.*
-tsconfig*.json

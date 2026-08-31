@@ -14,7 +14,7 @@ RUN apk add --no-cache \
 COPY package*.json ./
 
 # Устанавливаем все зависимости (включая dev для сборки)
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 # Копируем исходный код
 COPY . .
@@ -46,7 +46,7 @@ RUN adduser -S nestjs -u 1001
 COPY package*.json ./
 
 # Устанавливаем только production зависимости
-RUN npm ci --only=production && npm cache clean --force
+RUN npm ci --only=production --legacy-peer-deps && npm cache clean --force
 
 # Копируем собранное приложение
 COPY --from=builder --chown=nestjs:nodejs /app/dist ./dist

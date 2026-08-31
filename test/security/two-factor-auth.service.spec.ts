@@ -5,14 +5,21 @@ import { PrismaService } from '../../src/prisma.service';
 import { SecurityLoggerService } from '../../src/security/security-logger.service';
 import * as speakeasy from 'speakeasy';
 import * as QRCode from 'qrcode';
+import * as crypto from 'crypto';
 
-jest.mock('speakeasy');
-jest.mock('qrcode');
+jest.mock('speakeasy', () => ({
+  generateSecret: jest.fn(() => ({ base32: 'MOCKBASE32SECRET1234567890' })),
+  otpauthURL: jest.fn(() => 'otpauth://totp/test:test@example.com?secret=MOCK'),
+  totp: { verify: jest.fn(() => true) },
+}));
+jest.mock('qrcode', () => ({ toDataURL: jest.fn() }));
+
+const hash = (code: string) =>
+  crypto.createHash('sha256').update(code).digest('hex');
 
 describe('TwoFactorAuthService', () => {
   let service: TwoFactorAuthService;
   let prismaService: PrismaService;
-  let configService: ConfigService;
   let securityLogger: SecurityLoggerService;
 
   const mockUser = {
@@ -20,6 +27,8 @@ describe('TwoFactorAuthService', () => {
     email: 'test@example.com',
     twoFactorSecret: null,
     twoFactorEnabled: false,
+    twoFactorPendingSecret: null,
+    twoFactorPendingSecretCreatedAt: null,
     backupCodes: [],
   };
 
@@ -31,9 +40,7 @@ describe('TwoFactorAuthService', () => {
           provide: ConfigService,
           useValue: {
             get: jest.fn((key: string, defaultValue?: any) => {
-              const config = {
-                TOTP_ISSUER: 'Test Auth Service',
-              };
+              const config = { TOTP_ISSUER: 'Test Auth Service' };
               return config[key as keyof typeof config] || defaultValue;
             }),
           },
@@ -59,44 +66,91 @@ describe('TwoFactorAuthService', () => {
 
     service = module.get<TwoFactorAuthService>(TwoFactorAuthService);
     prismaService = module.get<PrismaService>(PrismaService);
-    configService = module.get<ConfigService>(ConfigService);
     securityLogger = module.get<SecurityLoggerService>(SecurityLoggerService);
+
+    (speakeasy.totp.verify as jest.Mock).mockReturnValue(true);
   });
+
+  afterEach(() => jest.clearAllMocks());
 
   it('should be defined', () => {
     expect(service).toBeDefined();
   });
 
-  describe('enable2FA', () => {
-    it('should enable 2FA for user', async () => {
+  describe('initiate2FA', () => {
+    it('should generate pending secret and QR, not enable 2FA', async () => {
       (prismaService.user.findUnique as jest.Mock).mockResolvedValue(mockUser);
-      (prismaService.user.update as jest.Mock).mockResolvedValue({
-        ...mockUser,
-        twoFactorSecret: 'test-secret',
-        twoFactorEnabled: true,
-        backupCodes: ['code1', 'code2'],
-      });
+      (prismaService.user.update as jest.Mock).mockResolvedValue(mockUser);
       (QRCode.toDataURL as jest.Mock).mockResolvedValue(
         'data:image/png;base64,test',
       );
 
-      const result = await service.enable2FA('1', 'test-secret');
+      const result = await service.initiate2FA('1');
 
       expect(result.qrCode).toBeDefined();
-      expect(result.backupCodes).toHaveLength(10);
-      expect(securityLogger.logSuccess).toHaveBeenCalledWith(
-        'localhost',
-        '2FA_ENABLED',
-        'User: 1',
+      expect(result.otpauthUrl).toBeDefined();
+      expect(prismaService.user.update).toHaveBeenCalledWith({
+        where: { id: '1' },
+        data: {
+          twoFactorPendingSecret: expect.any(String),
+          twoFactorPendingSecretCreatedAt: expect.any(Date),
+        },
+      });
+    });
+
+    it('should reject if 2FA already enabled', async () => {
+      (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
+        ...mockUser,
+        twoFactorEnabled: true,
+      });
+
+      await expect(service.initiate2FA('1')).rejects.toThrow(
+        '2FA is already enabled',
       );
     });
 
     it('should fail if user not found', async () => {
       (prismaService.user.findUnique as jest.Mock).mockResolvedValue(null);
 
-      await expect(service.enable2FA('1', 'test-secret')).rejects.toThrow(
-        'User not found',
+      await expect(service.initiate2FA('1')).rejects.toThrow('User not found');
+    });
+  });
+
+  describe('confirm2FA', () => {
+    it('should activate 2FA on valid first code and return backup codes', async () => {
+      (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
+        ...mockUser,
+        twoFactorPendingSecret: 'MOCKBASE32SECRET1234567890',
+      });
+      (prismaService.user.update as jest.Mock).mockResolvedValue(mockUser);
+
+      const result = await service.confirm2FA('1', '123456');
+
+      expect(result.success).toBe(true);
+      expect(result.backupCodes).toHaveLength(10);
+      expect(prismaService.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: '1' },
+          data: expect.objectContaining({
+            twoFactorEnabled: true,
+            twoFactorPendingSecret: null,
+            backupCodes: expect.any(Array),
+          }),
+        }),
       );
+    });
+
+    it('should return failure on invalid code', async () => {
+      (speakeasy.totp.verify as jest.Mock).mockReturnValue(false);
+      (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
+        ...mockUser,
+        twoFactorPendingSecret: 'MOCKBASE32SECRET1234567890',
+      });
+
+      const result = await service.confirm2FA('1', '000000');
+
+      expect(result.success).toBe(false);
+      expect(result.backupCodes).toHaveLength(0);
     });
   });
 
@@ -106,8 +160,6 @@ describe('TwoFactorAuthService', () => {
       (prismaService.user.update as jest.Mock).mockResolvedValue({
         ...mockUser,
         twoFactorEnabled: false,
-        twoFactorSecret: null,
-        backupCodes: [],
       });
 
       await service.disable2FA('1');
@@ -117,6 +169,8 @@ describe('TwoFactorAuthService', () => {
         data: {
           twoFactorSecret: null,
           twoFactorEnabled: false,
+          twoFactorPendingSecret: null,
+          twoFactorPendingSecretCreatedAt: null,
           backupCodes: [],
         },
       });
@@ -129,39 +183,39 @@ describe('TwoFactorAuthService', () => {
   });
 
   describe('verifyTOTP', () => {
-    it('should verify valid TOTP token', () => {
-      const result = service.verifyTOTP('test-secret', '123456');
+    it('should delegate to speakeasy', () => {
+      const result = service.verifyTOTP('MOCKBASE32SECRET1234567890', '123456');
 
-      expect(typeof result).toBe('boolean');
+      expect(speakeasy.totp.verify).toHaveBeenCalled();
+      expect(result).toBe(true);
+    });
+
+    it('should return false for invalid token', () => {
+      const result = service.verifyTOTP('secret', '');
+
+      expect(result).toBe(false);
     });
   });
 
   describe('verifyBackupCode', () => {
-    it('should verify valid backup code', async () => {
-      const userWithBackupCodes = {
+    it('should verify and burn valid backup code', async () => {
+      (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
         ...mockUser,
-        backupCodes: ['backup123', 'backup456'],
-      };
-      (prismaService.user.findUnique as jest.Mock).mockResolvedValue(
-        userWithBackupCodes,
-      );
-      (prismaService.user.update as jest.Mock).mockResolvedValue(
-        userWithBackupCodes,
-      );
+        backupCodes: [hash('backup123'), hash('backup456')],
+      });
+      (prismaService.user.update as jest.Mock).mockResolvedValue(mockUser);
 
       const result = await service.verifyBackupCode('1', 'backup123');
 
       expect(result).toBe(true);
+      expect(prismaService.user.update).toHaveBeenCalled();
     });
 
     it('should fail with invalid backup code', async () => {
-      const userWithBackupCodes = {
+      (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
         ...mockUser,
-        backupCodes: ['backup123', 'backup456'],
-      };
-      (prismaService.user.findUnique as jest.Mock).mockResolvedValue(
-        userWithBackupCodes,
-      );
+        backupCodes: [hash('backup123')],
+      });
 
       const result = await service.verifyBackupCode('1', 'invalid');
 
@@ -178,57 +232,11 @@ describe('TwoFactorAuthService', () => {
   });
 
   describe('generateSecret', () => {
-    it('should generate secret', () => {
+    it('should generate base32 secret via speakeasy', () => {
       const secret = service.generateSecret();
 
-      expect(secret).toBeDefined();
-      expect(typeof secret).toBe('string');
-    });
-  });
-
-  describe('generateQRCode', () => {
-    it('should generate QR code', async () => {
-      (QRCode.toDataURL as jest.Mock).mockResolvedValue(
-        'data:image/png;base64,test',
-      );
-
-      const qrCode = await service.generateQRCode(
-        '1',
-        'test@example.com',
-        'test-secret',
-      );
-
-      expect(qrCode).toBeDefined();
-      expect(qrCode).toMatch(/^data:image\/png;base64,/);
-    });
-
-    it('should handle QR code generation error', async () => {
-      (QRCode.toDataURL as jest.Mock).mockRejectedValue(
-        new Error('QR generation failed'),
-      );
-
-      await expect(
-        service.generateQRCode('1', 'test@example.com', 'test-secret'),
-      ).rejects.toThrow('QR generation failed');
-    });
-  });
-
-  describe('private methods', () => {
-    it('should access private generateBackupCodes method', () => {
-      const codes = (service as any).generateBackupCodes();
-
-      expect(Array.isArray(codes)).toBe(true);
-      expect(codes.length).toBe(10);
-    });
-
-    it('should access private generateTOTP method', () => {
-      const totp = (service as any).generateTOTP(
-        'test-secret',
-        Math.floor(Date.now() / 1000),
-      );
-
-      expect(typeof totp).toBe('string');
-      expect(totp.length).toBe(6);
+      expect(speakeasy.generateSecret).toHaveBeenCalled();
+      expect(secret).toBe('MOCKBASE32SECRET1234567890');
     });
   });
 });

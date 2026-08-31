@@ -2,8 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma.service';
 import { SecurityLoggerService } from '../security-logger.service';
-import * as crypto from 'crypto';
+import * as speakeasy from 'speakeasy';
 import * as QRCode from 'qrcode';
+import * as crypto from 'crypto';
 
 interface TOTPConfig {
   issuer: string;
@@ -29,43 +30,33 @@ export class TwoFactorAuthService {
     };
   }
 
-  // Генерация секретного ключа для 2FA в Base32 (RFC 4226/6238)
+  // Генерация Base32-секрета (RFC 4226/6238) через speakeasy
   generateSecret(): string {
-    const bytes = crypto.randomBytes(20);
-    return this.toBase32(bytes);
+    const secret = speakeasy.generateSecret({ length: 20 });
+    return secret.base32;
   }
 
-  // Конвертация в Base32
-  private toBase32(bytes: Buffer): string {
-    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-    let bits = 0;
-    let value = 0;
-    let output = '';
-
-    for (let i = 0; i < bytes.length; i++) {
-      value = (value << 8) | bytes[i];
-      bits += 8;
-
-      while (bits >= 5) {
-        output += alphabet[(value >>> (bits - 5)) & 31];
-        bits -= 5;
-      }
-    }
-
-    if (bits > 0) {
-      output += alphabet[(value << (5 - bits)) & 31];
-    }
-
-    return output;
+  // Генерация otpauth URI
+  private generateOtpAuthUri(email: string, secret: string): string {
+    return speakeasy.otpauthURL({
+      secret,
+      label: `${this.totpConfig.issuer}:${email}`,
+      issuer: this.totpConfig.issuer,
+      algorithm: this.totpConfig.algorithm.toLowerCase() as
+        | 'sha1'
+        | 'sha256'
+        | 'sha512',
+      digits: this.totpConfig.digits,
+      period: this.totpConfig.period,
+    });
   }
 
-  // Генерация QR кода для Google Authenticator
+  // Генерация QR кода
   async generateQRCode(
     userId: string,
     email: string,
     secret: string,
   ): Promise<string> {
-    // Валидация входных данных
     if (!userId || userId.trim().length === 0 || userId.length > 100) {
       throw new Error('Invalid user ID');
     }
@@ -78,7 +69,7 @@ export class TwoFactorAuthService {
       throw new Error('Invalid secret');
     }
 
-    const otpauth = `otpauth://totp/${this.totpConfig.issuer}:${email}?secret=${secret}&issuer=${this.totpConfig.issuer}&algorithm=${this.totpConfig.algorithm}&digits=${this.totpConfig.digits}&period=${this.totpConfig.period}`;
+    const otpauth = this.generateOtpAuthUri(email, secret);
 
     try {
       const qrCode = await QRCode.toDataURL(otpauth);
@@ -97,73 +88,109 @@ export class TwoFactorAuthService {
     }
   }
 
-  // Включение 2FA для пользователя
-  async enable2FA(
+  // Этап 1 — инициализация 2FA: генерируем secret и держим его в состоянии
+  // pending до подтверждения первого кода. Не активирует 2FA и не трогает
+  // уже настроенный secret (закрывает 2FA-02, IDEM-1).
+  async initiate2FA(
     userId: string,
-    secret?: string,
-  ): Promise<{
-    qrCode: string;
-    backupCodes: string[];
-  }> {
-    // Валидация входных данных
+  ): Promise<{ qrCode: string; otpauthUrl: string }> {
     if (!userId || userId.trim().length === 0 || userId.length > 100) {
       throw new Error('Invalid user ID');
     }
 
-    const generatedSecret = secret || this.generateSecret();
-    if (
-      !generatedSecret ||
-      generatedSecret.trim().length === 0 ||
-      generatedSecret.length > 100
-    ) {
-      throw new Error('Invalid secret');
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new Error('User not found');
     }
 
-    try {
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new Error('User not found');
-      }
-
-      const qrCode = await this.generateQRCode(
-        userId,
-        user.email,
-        generatedSecret,
-      );
-
-      const backupCodes = this.generateBackupCodes();
-
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          twoFactorEnabled: true,
-          twoFactorSecret: generatedSecret,
-          backupCodes,
-        },
-      });
-
-      this.securityLogger.logSuccess(
-        'localhost',
-        '2FA_ENABLED',
-        `User: ${userId}`,
-      );
-
-      return { qrCode, backupCodes };
-    } catch (error) {
-      this.securityLogger.logSecurityError(
-        '2FA_ENABLE_ERROR',
-        `Failed to enable 2FA for user ${userId}: ${(error as Error).message}`,
-      );
-      throw error;
+    // Если 2FA уже активна — не перезаписываем настроенный секрет
+    if (user.twoFactorEnabled) {
+      throw new Error('2FA is already enabled');
     }
+
+    const secret = this.generateSecret();
+    const qrCode = await this.generateQRCode(userId, user.email, secret);
+    const otpauthUrl = this.generateOtpAuthUri(user.email, secret);
+
+    await this.prismaService.user.update({
+      where: { id: userId },
+      data: {
+        twoFactorPendingSecret: secret,
+        twoFactorPendingSecretCreatedAt: new Date(),
+      },
+    });
+
+    this.securityLogger.logSuccess(
+      'localhost',
+      '2FA_INITIATED',
+      `User: ${userId}`,
+    );
+
+    return { qrCode, otpauthUrl };
   }
 
-  // Отключение 2FA для пользователя
+  // Этап 2 — подтверждение первого кода: активирует 2FA и выдаёт backup codes.
+  async confirm2FA(
+    userId: string,
+    token: string,
+  ): Promise<{ success: boolean; backupCodes: string[] }> {
+    if (!userId || userId.trim().length === 0 || userId.length > 100) {
+      throw new Error('Invalid user ID');
+    }
+
+    const user = await this.prismaService.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    if (!user.twoFactorPendingSecret) {
+      throw new Error('2FA setup was not initiated');
+    }
+
+    const valid = this.verifyTOTP(user.twoFactorPendingSecret, token);
+    if (!valid) {
+      return { success: false, backupCodes: [] };
+    }
+
+    const backupCodes = this.generateBackupCodeHashes();
+
+    await this.prismaService.user.update({
+      where: { id: userId },
+      data: {
+        twoFactorEnabled: true,
+        twoFactorSecret: user.twoFactorPendingSecret,
+        twoFactorPendingSecret: null,
+        twoFactorPendingSecretCreatedAt: null,
+        backupCodes: backupCodes.hashes,
+      },
+    });
+
+    this.securityLogger.logSuccess(
+      'localhost',
+      '2FA_ENABLED',
+      `User: ${userId}`,
+    );
+
+    return { success: true, backupCodes: backupCodes.plain };
+  }
+
+  // Совместимость: прежний вызов enable2FA делегирует в initiate2FA
+  async enable2FA(
+    userId: string,
+    _secret?: string,
+  ): Promise<{ qrCode: string; backupCodes: string[] }> {
+    const result = await this.initiate2FA(userId);
+    return { qrCode: result.qrCode, backupCodes: [] };
+  }
+
+  // Отключение 2FA
   async disable2FA(userId: string): Promise<boolean> {
-    // Валидация входных данных
     if (!userId || userId.trim().length === 0 || userId.length > 100) {
       throw new Error('Invalid user ID for 2FA disable');
     }
@@ -182,6 +209,8 @@ export class TwoFactorAuthService {
         data: {
           twoFactorEnabled: false,
           twoFactorSecret: null,
+          twoFactorPendingSecret: null,
+          twoFactorPendingSecretCreatedAt: null,
           backupCodes: [],
         },
       });
@@ -202,9 +231,10 @@ export class TwoFactorAuthService {
     }
   }
 
-  // Проверка TOTP токена
+  // Проверка TOTP через speakeasy (RFC 6238): Base32-секрет, SHA-1,
+  // фиксированное окно ±1 шаг. Заменяет дефектную самописную реализацию
+  // (2FA-1/2/3).
   verifyTOTP(secret: string, token: string): boolean {
-    // Валидация входных данных
     if (!secret || secret.trim().length === 0 || secret.length > 100) {
       return false;
     }
@@ -213,46 +243,30 @@ export class TwoFactorAuthService {
       return false;
     }
 
-    // Используем crypto.randomBytes для получения случайного времени
-    // чтобы избежать timing attacks
-    const timeBuffer = crypto.randomBytes(4);
-    const randomOffset = timeBuffer.readUInt32BE(0) % 1000; // Случайное смещение до 1 секунды
-
-    const now = Math.floor(Date.now() / 1000) + randomOffset;
-    const window = 1; // Допускаем отклонение в 1 период (30 секунд)
-
-    // Используем timing-safe сравнение
-    let isValid = false;
-    for (let i = -window; i <= window; i++) {
-      const time = now + i * this.totpConfig.period;
-      const expectedToken = this.generateTOTP(secret, time);
-
-      // Используем crypto.timingSafeEqual для предотвращения timing attacks
-      if (token.length === expectedToken.length) {
-        const tokenBuffer = Buffer.from(token, 'utf8');
-        const expectedBuffer = Buffer.from(expectedToken, 'utf8');
-        if (crypto.timingSafeEqual(tokenBuffer, expectedBuffer)) {
-          isValid = true;
-          break;
-        }
-      }
+    try {
+      return speakeasy.totp.verify({
+        secret,
+        encoding: 'base32',
+        token,
+        window: 1,
+        algorithm: this.totpConfig.algorithm.toLowerCase() as
+          | 'sha1'
+          | 'sha256'
+          | 'sha512',
+        digits: this.totpConfig.digits,
+      });
+    } catch {
+      return false;
     }
-
-    return isValid;
   }
 
-  // Проверка backup кода
+  // Проверка backup-кода по хешу; использованный код атомарно погашается.
   async verifyBackupCode(userId: string, backupCode: string): Promise<boolean> {
-    // Валидация входных данных
     if (!userId || userId.trim().length === 0 || userId.length > 100) {
       return false;
     }
 
-    if (
-      !backupCode ||
-      backupCode.trim().length === 0 ||
-      backupCode.length > 10
-    ) {
+    if (!backupCode || backupCode.trim().length === 0) {
       return false;
     }
 
@@ -265,39 +279,20 @@ export class TwoFactorAuthService {
         return false;
       }
 
-      const codes = user.backupCodes;
-
-      // Timing-safe проверка backup кода
-      let isValid = false;
-      for (const code of codes) {
-        if (backupCode.length === code.length) {
-          const backupBuffer = Buffer.from(backupCode, 'utf8');
-          const codeBuffer = Buffer.from(code, 'utf8');
-          if (crypto.timingSafeEqual(backupBuffer, codeBuffer)) {
-            isValid = true;
-            break;
-          }
-        }
+      const targetHash = this.hashCode(backupCode);
+      const idx = user.backupCodes.indexOf(targetHash);
+      if (idx === -1) {
+        return false;
       }
 
-      if (isValid) {
-        // Удаляем использованный код
-        const updatedCodes = codes.filter((code) => {
-          if (backupCode.length === code.length) {
-            const backupBuffer = Buffer.from(backupCode, 'utf8');
-            const codeBuffer = Buffer.from(code, 'utf8');
-            return !crypto.timingSafeEqual(backupBuffer, codeBuffer);
-          }
-          return true;
-        });
+      const updated = [...user.backupCodes];
+      updated.splice(idx, 1);
+      await this.prismaService.user.update({
+        where: { id: userId },
+        data: { backupCodes: updated },
+      });
 
-        await this.prismaService.user.update({
-          where: { id: userId },
-          data: { backupCodes: updatedCodes },
-        });
-      }
-
-      return isValid;
+      return true;
     } catch (error) {
       this.securityLogger.logSecurityError(
         '2FA_BACKUP_CODE_ERROR',
@@ -307,54 +302,18 @@ export class TwoFactorAuthService {
     }
   }
 
-  // Генерация TOTP кода
-  private generateTOTP(secret: string, time: number): string {
-    try {
-      // Валидация входных данных
-      if (!secret || typeof secret !== 'string' || secret.length > 100) {
-        throw new Error('Invalid secret for TOTP generation');
-      }
-
-      if (!time || typeof time !== 'number' || time < 0 || time > 9999999999) {
-        throw new Error('Invalid time for TOTP generation');
-      }
-
-      const counter = Math.floor(time / this.totpConfig.period);
-      const counterBuffer = Buffer.alloc(8);
-      counterBuffer.writeBigUInt64BE(BigInt(counter), 0);
-
-      const key = Buffer.from(secret, 'base64');
-      const hmac = crypto.createHmac('sha256', key);
-      hmac.update(counterBuffer);
-      const hash = hmac.digest();
-
-      const offset = hash[hash.length - 1] & 0xf;
-      const code =
-        ((hash[offset] & 0x7f) << 24) |
-        ((hash[offset + 1] & 0xff) << 16) |
-        ((hash[offset + 2] & 0xff) << 8) |
-        (hash[offset + 3] & 0xff);
-
-      return (code % Math.pow(10, this.totpConfig.digits))
-        .toString()
-        .padStart(this.totpConfig.digits, '0');
-    } catch (error) {
-      this.securityLogger.logSecurityError(
-        'TOTP_GENERATION_ERROR',
-        `Failed to generate TOTP: ${(error as Error).message}`,
-      );
-      throw error;
-    }
+  private hashCode(code: string): string {
+    return crypto.createHash('sha256').update(code).digest('hex');
   }
 
-  // Генерация backup кодов
-  private generateBackupCodes(): string[] {
-    const codes: string[] = [];
+  private generateBackupCodeHashes(): { plain: string[]; hashes: string[] } {
+    const plain: string[] = [];
+    const hashes: string[] = [];
     for (let i = 0; i < 10; i++) {
-      // Используем более безопасный диапазон: 8 цифр
       const code = crypto.randomInt(10000000, 99999999).toString();
-      codes.push(code);
+      plain.push(code);
+      hashes.push(this.hashCode(code));
     }
-    return codes;
+    return { plain, hashes };
   }
 }

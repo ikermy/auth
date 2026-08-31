@@ -1,86 +1,161 @@
 name: CD Pipeline Auth Microservice
 on:
-    push:
-        branches:
-            - staging
-    workflow_dispatch: {}
-    release:
-        types: published
+  push:
+    branches:
+      - staging
+      - main
+      - master
+      - production
+  workflow_dispatch: {}
+  release:
+    types: published
 
-# env:
-#     PORT: 50051
-#     IMAGE: ${{ vars.IMAGE }}:${{ github.sha }}
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  COMPOSE_FILE: config/prod/docker-compose.yml
+  # Absolute path where the project lives on the server (container + .env live here)
+  DEPLOY_DIR: /barcode/auth
 
 jobs:
-    test:
-        runs-on: ubuntu-latest
-        name: Setup, test, and build project
-        steps:
-            - name: Checkout
-              uses: actions/checkout@4
+  test:
+    runs-on: ubuntu-latest
+    name: Setup, test, and build project
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-            - name: Install dependencies
-              run: npm ci --legacy-peer-deps
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
 
-            - name: Run tests
-              run: npm test
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
 
-    # build:
-    #     needs: test
-    #     runs-on: ubuntu-latest
-    #     name: Setup project, authorize GitHub Actions to GCP and Docekr Hub, and deploy
-    #     steps:
-    #         - name: Checkout
-    #           uses: actions/checkout@4
+      - name: Generate protobuf files
+        run: npm run proto:gen
 
-    #         - name: Authenticate for GCP
-    #           id: gcp-auth
-    #           uses: google-github-actions/auth@v2
-    #           with:
-    #             credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: Build application
+        run: npm run build
 
-    #         - name: Set up Cloud SDK
-    #           uses: google-github-actions/setup-gcloud@v2
+      - name: Run tests
+        run: npm test
 
-    #         - name: Authenticate for Docker Hub
-    #           id: docker-auth
-    #           env:
-    #             D_USER: ${{ secrets.DOCKER_USER }}
-    #             D_PASS: ${{ secrets.DOCKER_PASSWORD }}
-    #           run: |
-    #             docker login -u $D_USER -p $D_PASS
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    #         - name: Build and tag Image
-    #           run: |
-    #             docker build -t ${{ env.IMAGE }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    #         - name: Push the image to Docker Hub
-    #           run: |
-    #             docker push ${{ env.IMAGE }}
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    #         - name: Enable the Billing API
-    #           run: |
-    #             gcloud services enable cloudbilling.googleapis.com --project ${{ secrets.GCP_PROJECT_ID }}
+      - name: Build and push Auth image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: config/prod/Dockerfile
+          target: production
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:prod
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-    #         - name: Deploy to GCP Run - Production environment (If a new release was published from the master branch)
-    #           if: github.event_name == 'release' && github.event.action == 'published' && github.event.release.target_commitish == 'main'
-    #           run: |
-    #             gcloud run deploy ${{ vars.GCR_PROJECT_NAME }} \
-    #             --region ${{ vars.GCR_REGION }} \
-    #             --image ${{ env.IMAGE }} \
-    #             --platform managed \
-    #             --allow-unauthenticated \
-    #             --tag production
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    #         - name: Deploy to GCP Run - Staging environment
-    #           if: github.ref == 'refs/heads/main'
-    #           run: |
-    #             echo "Deploying to staging environment"
-    #             # Deploy service with to staging environment
-    #             gcloud run deploy ${{ vars.GCR_PROJECT_NAME }} \
-    #             --region ${{ vars.GCR_REGION}} \
-    #             --image ${{ env.IMAGE }} \
-    #             --platform "managed" \
-    #             --allow-unauthenticated \
-    #             --tag staging
-                
+      - name: Validate required secrets
+        env:
+          JWT_SUPER_SECRET_WORD: ${{ secrets.JWT_SUPER_SECRET_WORD }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          HOST: ${{ secrets.HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          test -n "$JWT_SUPER_SECRET_WORD" || { echo "JWT_SUPER_SECRET_WORD is not configured"; exit 1; }
+          test -n "$ENCRYPTION_KEY" || { echo "ENCRYPTION_KEY is not configured"; exit 1; }
+          test -n "$HOST" || { echo "HOST is not configured"; exit 1; }
+          test -n "$SSH_PRIVATE_KEY" || { echo "SSH_PRIVATE_KEY is not configured"; exit 1; }
+
+      - name: Copy compose & configs to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          source: "config/prod/docker-compose.yml,config/prod/prometheus.yml"
+          target: ${{ env.DEPLOY_DIR }}
+
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE: ${{ env.IMAGE_NAME }}
+          SHA: ${{ github.sha }}
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          COMPOSE_FILE: ${{ env.COMPOSE_FILE }}
+          JWT_SUPER_SECRET_WORD: ${{ secrets.JWT_SUPER_SECRET_WORD }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          KAFKA_BROKERS: ${{ secrets.KAFKA_BROKERS }}
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          envs: REGISTRY,IMAGE,SHA,DEPLOY_DIR,COMPOSE_FILE,JWT_SUPER_SECRET_WORD,ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,DATABASE_URL,REDIS_HOST,REDIS_PORT,REDIS_PASSWORD,KAFKA_BROKERS
+          script: |
+            set -e
+            # compose-файл лежит в config/prod/, поэтому относительные пути (.env, prometheus.yml) корректны
+            cd $DEPLOY_DIR/config/prod
+
+            # ── Общая сеть платформы (оркестратор bff создаёт её первой) ──
+            docker network inspect barcode_shared >/dev/null 2>&1 || docker network create barcode_shared
+
+            # ── .env: образы тянутся из ghcr.io + обязательные для прод секреты ──
+            # env_file в compose: ../../.env  →  $DEPLOY_DIR/.env
+            cat > $DEPLOY_DIR/.env <<EOF
+            AUTH_IMAGE=$REGISTRY/$IMAGE:$SHA
+            JWT_SUPER_SECRET_WORD=$JWT_SUPER_SECRET_WORD
+            ENCRYPTION_KEY=$ENCRYPTION_KEY
+            TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
+            DATABASE_URL=$DATABASE_URL
+            REDIS_HOST=$REDIS_HOST
+            REDIS_PORT=$REDIS_PORT
+            REDIS_PASSWORD=$REDIS_PASSWORD
+            KAFKA_BROKERS=$KAFKA_BROKERS
+            EOF
+            chmod 600 $DEPLOY_DIR/.env
+
+            # ── Деплой приложения (образы тянутся из ghcr.io, на сервере не собираются) ──
+            docker login ghcr.io -u ${{ github.actor }} --password-stdin <<< "${{ secrets.GITHUB_TOKEN }}"
+            docker compose -f $COMPOSE_FILE pull app
+            docker compose -f $COMPOSE_FILE up -d app
+
+            # ── Проверка ──
+            docker compose -f $COMPOSE_FILE ps app
+            docker compose -f $COMPOSE_FILE exec -T app sh -c 'nc -z localhost 50051' || echo "WARNING: healthcheck nc exited non-zero (start_period)"
+            docker image prune -f

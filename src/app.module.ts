@@ -1,15 +1,24 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { JwtModule } from '@nestjs/jwt';
 import { AuthModule } from './auth/auth.module';
 import { SecurityModule } from './security/security.module';
-import { PrismaService } from './prisma.service';
+import { PrismaModule } from './prisma.module';
 import { CronModule } from './cron/cron.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+    }),
+    // Единый глобальный JwtModule (DI-01): доступен SecurityModule и AuthModule
+    JwtModule.registerAsync({
+      global: true,
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.getOrThrow<string>('JWT_SECRET'),
+      }),
+      inject: [ConfigService],
     }),
     ThrottlerModule.forRoot([
       {
@@ -21,12 +30,11 @@ import { CronModule } from './cron/cron.module';
         limit: 1000, // 1000 запросов в час
       },
     ]),
+    PrismaModule,
     SecurityModule,
     AuthModule,
     CronModule,
   ],
   controllers: [],
-  providers: [PrismaService],
-  exports: [PrismaService],
 })
 export class AppModule {}

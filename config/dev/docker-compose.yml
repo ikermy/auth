@@ -1,87 +1,67 @@
+# =============================================================================
+# docker-compose.yml — Auth Microservice: DEV-версия (config/dev)
+#
+# Auth — часть семейства микросервисов. Оркестратор bff (../..  / bff) поднимает
+# сеть barcode-shared и общие PostgreSQL/Redis/Kafka/envoy. Auth использует эти
+# общие ресурсы и НЕ поднимает собственные db/redis.
+#
+# Требования:
+#   - сеть:        docker network create barcode_shared
+#   - bff поднят:  cd ../bff && docker compose up -d  (postgres, redis, kafka, envoy)
+#   - бд:          в общем postgres создана база auth_db
+#   - env:         ../.env с JWT_SUPER_SECRET_WORD, ENCRYPTION_KEY, DATABASE_URL
+#
+# Запуск (из корня auth):
+#   docker compose -f config/dev/docker-compose.yml up
+# =============================================================================
+
 services:
   app:
     container_name: auth_app_dev
-    image: auth_app:dev
+    image: auth:dev
     build:
       context: ../../
       dockerfile: config/dev/Dockerfile
     restart: unless-stopped
     env_file:
-      - ../dev/.env
+      - path: ../../.env
+        required: false
+    environment:
+      GRPC_URL: "${GRPC_URL:-0.0.0.0:50051}"
+      GRPC_PACKAGE: "${GRPC_PACKAGE:-auth}"
+      # JWT_SECRET должен совпадать с JWT_SECRET в bff (LocalValidator валидирует токены локально)
+      JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret}"
+      JWT_EXPIRES_IN: "${JWT_EXPIRES_IN:-15m}"
+      JWT_REFRESH_IN: "${JWT_REFRESH_IN:-7d}"
+      # Общие ресурсы из bff
+      DATABASE_URL: "${DATABASE_URL:-postgresql://billing:billing@postgres:5432/auth_db}"
+      REDIS_HOST: "${REDIS_HOST:-redis}"
+      REDIS_PORT: "${REDIS_PORT:-6379}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      KAFKA_BROKERS: "${KAFKA_BROKERS:-kafka:9092}"
+      TLS_ENABLED: "${TLS_ENABLED:-false}"
+      TOTP_ISSUER: "${TOTP_ISSUER:-Auth Microservice}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-dev-encryption-key-32-characters-long!}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      ANOMALY_THRESHOLD: "${ANOMALY_THRESHOLD:-0.7}"
     ports:
       - "50051:50051"
-      - "9229:9229"  # Debug port
-    networks:
-      - auth_network
-    depends_on:
-      db:
-        condition: service_started
-      redis:
-        condition: service_healthy
+      - "9229:9229" # node --inspect debug port
     volumes:
-      - ../../src:/app/src:ro  # Hot reload for development
-      - ../../prisma:/app/prisma:ro
-
-  db:
-    container_name: auth_db_dev
-    image: postgres:15
-    restart: unless-stopped
-    env_file:
-      - ../dev/.env
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - POSTGRES_DB=${POSTGRES_DB:-auth_db}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ../../database/init:/docker-entrypoint-initdb.d:ro
+      - ../../src:/app/src
+      - ../../prisma:/app/prisma
+    # Hot-reload: монтирование src перекрывает proto-типы из образа —
+    # перегенерируем их и применяем миграции к общему postgres при старте.
+    command: >
+      sh -c "npx prisma generate && npm run proto:gen && npx prisma migrate deploy && npm run start:debug"
     networks:
-      - auth_network
-
-  redis:
-    container_name: auth_redis_dev
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - auth_network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      retries: 5
-      start_period: 30s
-      timeout: 5s
-
-  pgadmin:
-    container_name: auth_pgadmin_dev
-    image: dpage/pgadmin4:latest
-    restart: unless-stopped
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@admin.com}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
-      PGADMIN_CONFIG_SERVER_MODE: 'False'
-    ports:
-      - "5050:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-    networks:
-      - auth_network
-    depends_on:
-      - db
-
-volumes:
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local
-  pgadmin_data:
-    driver: local
+      barcode-shared:
+        aliases:
+          - auth
+          - auth-service
 
 networks:
-  auth_network:
-    driver: bridge
+  # Общая сеть платформы (docker network create barcode_shared)
+  barcode-shared:
+    external: true
+    name: barcode_shared

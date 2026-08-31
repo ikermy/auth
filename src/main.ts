@@ -14,6 +14,10 @@ async function bootstrap() {
       grpcConfig,
     );
 
+    // Корректное завершение: при сигнале SIGTERM/SIGINT вызываются
+    // onModuleDestroy (Prisma $disconnect, закрытие Redis-клиентов)
+    app.enableShutdownHooks();
+
     const logger = new Logger('Bootstrap');
 
     // Инициализируем TLS безопасность

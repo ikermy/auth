@@ -207,13 +207,13 @@ describe('AuthService - Seed Phrase', () => {
 
       mockPrismaService.user.findUnique.mockResolvedValue(userWithSeed);
       mockPrismaService.user.update.mockResolvedValue(userWithSeed);
-      mockJwtService.signAsync.mockResolvedValue('oracle-token');
+      mockJwtService.signAsync.mockResolvedValue('user-token');
 
       const result = await service.verifySeedPhrase(request);
 
       expect(result.success).toBe(true);
       expect(result.message).toBe('Seed phrase verified successfully');
-      expect(result.oracleAccessToken).toBe('encrypted-token');
+      expect(result.requestId).toBeDefined();
     });
 
     it('should throw error for invalid seed phrase', async () => {
