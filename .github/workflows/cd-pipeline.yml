@@ -13,7 +13,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  COMPOSE_FILE: config/prod/docker-compose.yml
+  # scp копирует в $DEPLOY_DIR/config/prod/docker-compose.yml, а ssh-скрипт делает cd туда
+  COMPOSE_FILE: docker-compose.yml
   # Absolute path where the project lives on the server (container + .env live here)
   DEPLOY_DIR: /barcode/auth
 
@@ -129,7 +130,7 @@ jobs:
           envs: REGISTRY,IMAGE,SHA,DEPLOY_DIR,COMPOSE_FILE,JWT_SUPER_SECRET_WORD,ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,DATABASE_URL,REDIS_HOST,REDIS_PORT,REDIS_PASSWORD,KAFKA_BROKERS
           script: |
             set -e
-            # compose-файл лежит в config/prod/, поэтому относительные пути (.env, prometheus.yml) корректны
+            # scp сохраняет относительный путь: файлы лежат в $DEPLOY_DIR/config/prod/
             cd $DEPLOY_DIR/config/prod
 
             # ── Общая сеть платформы (оркестратор bff создаёт её первой) ──
