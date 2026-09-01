@@ -63,41 +63,6 @@ services:
           - auth
           - auth-service
 
-  # ── Observability (необязательно, в общей сети платформы) ─────────────
-  prometheus:
-    container_name: auth_prometheus
-    image: prom/prometheus:latest
-    restart: unless-stopped
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
-    networks:
-      - barcode-shared
-
-  grafana:
-    container_name: auth_grafana
-    image: grafana/grafana:latest
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-    volumes:
-      - grafana_data:/var/lib/grafana
-    networks:
-      - barcode-shared
-
-volumes:
-  prometheus_data:
-  grafana_data:
-
 networks:
   # Общая сеть платформы (docker network create barcode_shared)
   barcode-shared:

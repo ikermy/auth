@@ -1,89 +1,64 @@
+# =============================================================================
+# docker-compose.yml — Auth Microservice: STAGE-версия (config/stage)
+#
+# Stage — production-подобная сборка без hot-reload. Использует общую сеть
+# barcode-shared и общие PostgreSQL/Redis/Kafka/envoy оркестратора bff.
+# Собственные db/redis/pgadmin не поднимаются.
+#
+# Требования:
+#   - сеть:        docker network create barcode_shared
+#   - bff поднят:  cd ../bff && docker compose up -d
+#   - бд:          в общем postgres создана база auth_db
+#   - env:         ../.env с JWT_SECRET, ENCRYPTION_KEY, DATABASE_URL
+#
+# Запуск (из корня auth):
+#   docker compose -f config/stage/docker-compose.yml up -d
+# =============================================================================
+
 services:
   app:
     container_name: auth_app_stage
-    image: auth_app:stage
+    image: auth:stage
     build:
       context: ../../
       dockerfile: config/stage/Dockerfile
     restart: unless-stopped
     env_file:
-      - ../stage/.env.example
+      - path: ../../.env
+        required: false
+    environment:
+      GRPC_URL: "${GRPC_URL:-0.0.0.0:50051}"
+      GRPC_PACKAGE: "${GRPC_PACKAGE:-auth}"
+      JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret}"
+      JWT_EXPIRES_IN: "${JWT_EXPIRES_IN:-15m}"
+      JWT_REFRESH_IN: "${JWT_REFRESH_IN:-7d}"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://billing:billing@postgres:5432/auth_db}"
+      REDIS_HOST: "${REDIS_HOST:-redis}"
+      REDIS_PORT: "${REDIS_PORT:-6379}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+      KAFKA_BROKERS: "${KAFKA_BROKERS:-kafka:9092}"
+      TLS_ENABLED: "${TLS_ENABLED:-false}"
+      TOTP_ISSUER: "${TOTP_ISSUER:-Auth Microservice}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      ANOMALY_THRESHOLD: "${ANOMALY_THRESHOLD:-0.7}"
     ports:
       - "50051:50051"
-    networks:
-      - auth_network
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  db:
-    container_name: auth_db_stage
-    image: postgres:15
-    restart: unless-stopped
-    env_file:
-      - ../stage/.env.example
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ../../database/init:/docker-entrypoint-initdb.d:ro
-    networks:
-      - auth_network
+    command: >
+      sh -c "npx prisma migrate deploy && npm run start:prod"
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}"]
-      interval: 10s
-      retries: 5
-      start_period: 30s
-      timeout: 5s
-
-  redis:
-    container_name: auth_redis_stage
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
+      test: ["CMD", "nc", "-z", "localhost", "50051"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
-      - auth_network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      retries: 5
-      start_period: 30s
-      timeout: 5s
-
-  pgadmin:
-    container_name: auth_pgadmin_stage
-    image: dpage/pgadmin4:latest
-    restart: unless-stopped
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
-      PGADMIN_CONFIG_SERVER_MODE: 'True'
-    ports:
-      - "5050:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-    networks:
-      - auth_network
-    depends_on:
-      - db
-
-volumes:
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local
-  pgadmin_data:
-    driver: local
+      barcode-shared:
+        aliases:
+          - auth
+          - auth-service
 
 networks:
-  auth_network:
-    driver: bridge
+  barcode-shared:
+    external: true
+    name: barcode_shared
