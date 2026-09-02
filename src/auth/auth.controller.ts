@@ -351,7 +351,7 @@ export class AuthController {
 
   @GrpcMethod('AuthService', 'verify2FA')
   async verify2FA(
-    data: Verify2FARequest,
+    @Payload() data: Verify2FARequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<Verify2FAResponse> {
     const userId = principal.userId;
@@ -460,7 +460,7 @@ export class AuthController {
 
   @GrpcMethod('AuthService', 'disable2FA')
   async disable2FA(
-    data: Disable2FARequest,
+    @Payload() data: Disable2FARequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<Disable2FAResponse> {
     const userId = principal.userId;
@@ -957,7 +957,7 @@ export class AuthController {
 
   @GrpcMethod('AuthService', 'linkTelegramAccount')
   async linkTelegramAccount(
-    data: LinkTelegramRequest,
+    @Payload() data: LinkTelegramRequest,
     @CurrentUser() principal: AuthPrincipal,
     metadata?: any,
   ): Promise<LinkTelegramResponse> {
@@ -1107,7 +1107,7 @@ export class AuthController {
   @GrpcMethod('AuthService', 'enableSeedPhrase')
   @Throttle({ default: { ttl: 300000, limit: 5 } }) // 5 попыток в 5 минут
   async enableSeedPhrase(
-    data: EnableSeedPhraseRequest,
+    @Payload() data: EnableSeedPhraseRequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<EnableSeedPhraseResponse> {
     const { seedPhrase } = data;
@@ -1195,7 +1195,7 @@ export class AuthController {
   @GrpcMethod('AuthService', 'verifySeedPhrase')
   @Throttle({ default: { ttl: 60000, limit: 10 } }) // 10 попыток в минуту
   async verifySeedPhrase(
-    data: VerifySeedPhraseRequest,
+    @Payload() data: VerifySeedPhraseRequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<VerifySeedPhraseResponse> {
     const { seedPhrase } = data;
@@ -1322,7 +1322,7 @@ export class AuthController {
   @GrpcMethod('AuthService', 'disableSeedPhrase')
   @Throttle({ default: { ttl: 300000, limit: 3 } }) // 3 попытки в 5 минут
   async disableSeedPhrase(
-    data: DisableSeedPhraseRequest,
+    @Payload() data: DisableSeedPhraseRequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<DisableSeedPhraseResponse> {
     const { seedPhrase } = data;
@@ -1526,7 +1526,7 @@ export class AuthController {
   @GrpcMethod('AuthService', 'changeEmail')
   @Throttle({ default: { ttl: 300000, limit: 3 } }) // 3 попытки в 5 минут
   async changeEmail(
-    data: ChangeEmailRequest,
+    @Payload() data: ChangeEmailRequest,
     @CurrentUser() principal: AuthPrincipal,
     metadata?: any,
   ): Promise<ChangeEmailResponse> {
@@ -1607,7 +1607,7 @@ export class AuthController {
   @GrpcMethod('AuthService', 'changeTelegramAccount')
   @Throttle({ default: { ttl: 300000, limit: 5 } }) // 5 попыток в 5 минут
   async changeTelegramAccount(
-    data: ChangeTelegramAccountRequest,
+    @Payload() data: ChangeTelegramAccountRequest,
     @CurrentUser() principal: AuthPrincipal,
     metadata?: any,
   ): Promise<ChangeTelegramAccountResponse> {
@@ -1812,7 +1812,7 @@ export class AuthController {
   @GrpcMethod('AuthService', 'linkEmailToAccount')
   @Throttle({ default: { ttl: 300000, limit: 3 } }) // 3 попытки в 5 минут
   async linkEmailToAccount(
-    data: LinkEmailRequest,
+    @Payload() data: LinkEmailRequest,
     @CurrentUser() principal: AuthPrincipal,
     metadata?: any,
   ): Promise<LinkEmailResponse> {
@@ -2362,7 +2362,7 @@ export class AuthController {
 
   @GrpcMethod('AuthService', 'suggestUsernameAlternatives')
   async suggestUsernameAlternatives(
-    data: SuggestUsernameAlternativesRequest,
+    @Payload() data: SuggestUsernameAlternativesRequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<SuggestUsernameAlternativesResponse> {
     const { desiredUsername, maxAlternatives } = data;
