@@ -844,6 +844,7 @@ export class AuthController {
         select: {
           id: true,
           email: true,
+          telegramAuth: true,
           telegramId: true,
           telegramFirstName: true,
           telegramLastName: true,
@@ -915,7 +916,7 @@ export class AuthController {
       // 7. Генерируем токены (создаёт активную сессию)
       const tokens = await this.enhancedJwtService.generateTokens(
         user.id,
-        user.email,
+        user.email || user.telegramAuth || '',
       );
 
       // 8. Очищаем счетчик неудачных попыток
@@ -1435,7 +1436,7 @@ export class AuthController {
   @GrpcMethod('AuthService', 'changePassword')
   @Throttle({ default: { ttl: 300000, limit: 5 } }) // 5 попыток в 5 минут
   async changePassword(
-    data: ChangePasswordRequest,
+    @Payload() data: ChangePasswordRequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<ChangePasswordResponse> {
     const { currentPassword, newPassword } = data;
@@ -1489,7 +1490,11 @@ export class AuthController {
       }
 
       // 3. Меняем пароль
-      const result = await this.authService.changePassword(data);
+      const result = await this.authService.changePassword({
+        userId,
+        currentPassword,
+        newPassword,
+      });
 
       // 4. Логируем успешное изменение
       this.securityLogger.logJwtEvent(
@@ -1620,8 +1625,40 @@ export class AuthController {
     this.logger.log(`📱 [TELEGRAM] CHANGE request received for user ${userId}`);
 
     try {
-      // Повторное подтверждение для чувствительной операции (смена Telegram)
-      await this.assertReauthentication(userId, metadata);
+      // Повторное подтверждение для чувствительной операции (смена Telegram).
+      // Текущий пароль не требуется — у telegram-аккаунтов он сгенерирован системой
+      // и неизвестен пользователю; проверка подписи виджета ниже и есть подтверждение.
+      const user = await this.prismaService.user.findUnique({
+        where: { id: userId },
+      });
+
+      if (!user) {
+        throw new RpcException({
+          code: status.NOT_FOUND,
+          message: 'User not found',
+        });
+      }
+
+      if (user.twoFactorEnabled && user.twoFactorSecret) {
+        const metadataGet = metadata?.get?.bind(metadata) || (() => []);
+        const otpToken = metadataGet('x-otp-token')?.[0];
+        if (!otpToken || otpToken.trim().length === 0) {
+          throw new RpcException({
+            code: status.INVALID_ARGUMENT,
+            message: 'Reauthentication required: 2FA token',
+          });
+        }
+        const otpOk = this.twoFactorAuthService.verifyTOTP(
+          user.twoFactorSecret,
+          otpToken,
+        );
+        if (!otpOk) {
+          throw new RpcException({
+            code: status.PERMISSION_DENIED,
+            message: 'Reauthentication failed: invalid 2FA token',
+          });
+        }
+      }
 
       // 1. Валидация входных данных
       if (!userId || userId.trim().length === 0 || userId.length > 100) {
@@ -1684,7 +1721,10 @@ export class AuthController {
       }
 
       // 3. Меняем Telegram аккаунт
-      const result = await this.authService.changeTelegramAccount(data);
+      const result = await this.authService.changeTelegramAccount({
+        ...data,
+        userId,
+      });
 
       // 4. Логируем успешное изменение
       this.securityLogger.logJwtEvent(
@@ -1782,9 +1822,6 @@ export class AuthController {
     this.logger.log(`📧 [EMAIL] LINK request received for user ${userId}`);
 
     try {
-      // Повторное подтверждение для чувствительной операции (linking email)
-      await this.assertReauthentication(userId, metadata);
-
       // 1. Валидация входных данных
       if (!userId || userId.trim().length === 0 || userId.length > 100) {
         throw new RpcException({
@@ -1800,7 +1837,9 @@ export class AuthController {
         });
       }
 
-      if (!password || password.trim().length === 0 || password.length > 1000) {
+      // Пароль опционален: если не передан — привязываем только email
+      // (аккаунт остаётся telegram-ориентированным, пароль не меняется).
+      if (password && password.length > 1000) {
         throw new RpcException({
           code: status.INVALID_ARGUMENT,
           message: 'Invalid password',
@@ -1828,7 +1867,30 @@ export class AuthController {
         });
       }
 
-      // 4. Проверяем, что у пользователя еще нет реального email
+      // 4. Повторное подтверждение: 2FA-токен, если включена. Текущий пароль не
+      // требуется — у telegram-аккаунтов он сгенерирован системой и неизвестен.
+      if (user.twoFactorEnabled && user.twoFactorSecret) {
+        const metadataGet = metadata?.get?.bind(metadata) || (() => []);
+        const otpToken = metadataGet('x-otp-token')?.[0];
+        if (!otpToken || otpToken.trim().length === 0) {
+          throw new RpcException({
+            code: status.INVALID_ARGUMENT,
+            message: 'Reauthentication required: 2FA token',
+          });
+        }
+        const otpOk = this.twoFactorAuthService.verifyTOTP(
+          user.twoFactorSecret,
+          otpToken,
+        );
+        if (!otpOk) {
+          throw new RpcException({
+            code: status.PERMISSION_DENIED,
+            message: 'Reauthentication failed: invalid 2FA token',
+          });
+        }
+      }
+
+      // 5. Проверяем, что у пользователя еще нет реального email
       if (user.origin === 'email') {
         throw new RpcException({
           code: status.ALREADY_EXISTS,
@@ -1836,7 +1898,7 @@ export class AuthController {
         });
       }
 
-      // 5. Проверяем, что новый email не занят другим пользователем
+      // 6. Проверяем, что новый email не занят другим пользователем
       const existingEmailUser = await this.prismaService.user.findUnique({
         where: { email: email.toLowerCase() },
       });
@@ -1848,20 +1910,31 @@ export class AuthController {
         });
       }
 
-      // 6. Хешируем пароль
-      const saltRounds = BCRYPT_COST;
-      const hashedPassword = await bcrypt.hash(password, saltRounds);
+      // 7. Обновляем пользователя (email + опционально пароль/origin)
+      const updateData: {
+        email: string;
+        password?: string;
+        passwordChangedAt?: Date;
+        origin?: 'email';
+        isEmailVerified: boolean;
+        emailVerificationToken: string;
+      } = {
+        email: email.toLowerCase(),
+        isEmailVerified: false, // Требует верификации
+        emailVerificationToken: crypto.randomBytes(32).toString('hex'),
+      };
 
-      // 7. Обновляем пользователя с новым email и паролем
+      if (password && password.trim().length > 0) {
+        const saltRounds = BCRYPT_COST;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+        updateData.password = hashedPassword;
+        updateData.passwordChangedAt = new Date();
+        updateData.origin = 'email'; // Полный link: аккаунт получает email-identity
+      }
+
       await this.prismaService.user.update({
         where: { id: userId },
-        data: {
-          email: email.toLowerCase(),
-          password: hashedPassword,
-          passwordChangedAt: new Date(),
-          isEmailVerified: false, // Требует верификации
-          emailVerificationToken: crypto.randomBytes(32).toString('hex'),
-        },
+        data: updateData,
       });
 
       this.logger.log(

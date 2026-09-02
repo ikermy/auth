@@ -27,7 +27,7 @@ enum AccountOrigin {
 
 model User {
   id String @id @default(uuid())
-  email String @unique
+  email String? @unique
   password String
   passwordChangedAt DateTime @default(now())
   role UserRole @default(user)
@@ -57,6 +57,10 @@ model User {
   telegramLastName String?
   telegramPhotoUrl String?
   isTelegramVerified Boolean @default(false)
+
+  // Служебный Telegram-логин (placeholder вида tg_...@secure.local).
+  // Хранится здесь, а не в email, чтобы освободить email для реального адреса.
+  telegramAuth String?
   
   // 2FA поля
   twoFactorEnabled Boolean @default(false)

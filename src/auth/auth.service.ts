@@ -277,7 +277,7 @@ export class AuthService {
 
       const tokens = await this.enhancedJwtService.generateTokens(
         user.id,
-        user.email,
+        user.email || user.telegramAuth || '',
       );
       return {
         accessToken: tokens.accessToken,
@@ -968,12 +968,86 @@ export class AuthService {
         });
       }
 
-      // Аудит смены Telegram: логируем старые данные в JSON
-      if (user.telegramId && user.telegramId !== telegramId) {
+      // Аккаунт, зарегистрированный по email: привязываем только telegram username (ник).
+      // Подпись данных виджета уже проверена в контроллере; сохраняем только реальный ник.
+      // Если ник занят другим пользователем — приоритет у виджета: снимаем дубль.
+      if (user.origin === 'email') {
+        const cleanUsername = (username || '').trim().replace(/^@/, '');
+        const telegramRegex = /^[a-zA-Z0-9_]{3,32}$/;
+        if (!cleanUsername || !telegramRegex.test(cleanUsername)) {
+          throw new RpcException({
+            code: status.INVALID_ARGUMENT,
+            message: 'Invalid telegram username',
+          });
+        }
+
+        // Аудит смены ника текущего пользователя
+        if ((user.telegramUsername || '') !== cleanUsername) {
+          await this.prismaService.telegramIdentityAudit.create({
+            data: {
+              userId,
+              eventType: 'telegram_username_linked',
+              previousData: {
+                telegramUsername: user.telegramUsername,
+                changedAt: new Date().toISOString(),
+              },
+            },
+          });
+        }
+
+        // Если ник занят другим пользователем — приоритет у виджета, снимаем дубль
+        const duplicateUser = await this.prismaService.user.findFirst({
+          where: { telegramUsername: cleanUsername, id: { not: userId } },
+        });
+        if (duplicateUser) {
+          await this.prismaService.telegramIdentityAudit.create({
+            data: {
+              userId: duplicateUser.id,
+              eventType: 'telegram_username_removed',
+              previousData: {
+                telegramUsername: duplicateUser.telegramUsername,
+                changedAt: new Date().toISOString(),
+              },
+            },
+          });
+          await this.prismaService.user.update({
+            where: { id: duplicateUser.id },
+            data: { telegramUsername: null },
+          });
+        }
+
+        await this.prismaService.user.update({
+          where: { id: userId },
+          data: { telegramUsername: cleanUsername },
+        });
+
+        this.logger.log(
+          `✅ [TELEGRAM] Linked telegram username ${cleanUsername} to email user ${userId}`,
+        );
+
+        return {
+          success: true,
+          message: 'Telegram username linked successfully',
+        };
+      }
+
+      // Аудит смены Telegram: логируем старые данные в JSON. Логируется любое
+      // изменение identity (telegramId, username/nick, имя, фото), а не только смена id.
+      const identityChanged =
+        user.telegramId !== telegramId ||
+        (user.telegramUsername || '') !== (username || '') ||
+        (user.telegramFirstName || '') !== (firstName || '') ||
+        (user.telegramLastName || '') !== (lastName || '') ||
+        (user.telegramPhotoUrl || '') !== (photoUrl || '');
+
+      if (identityChanged) {
         await this.prismaService.telegramIdentityAudit.create({
           data: {
             userId,
-            eventType: 'telegram_changed',
+            eventType:
+              user.telegramId !== telegramId
+                ? 'telegram_changed'
+                : 'telegram_identity_updated',
             previousData: {
               telegramId: user.telegramId,
               telegramUsername: user.telegramUsername,

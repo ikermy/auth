@@ -203,7 +203,7 @@ export class UserIdentityService {
 
     return {
       userId: user.id,
-      email: user.email,
+      email: user.email || '',
       username: user.username || '',
       nickname: user.nickname || '',
       photoBase64: user.photoBase64 || '',

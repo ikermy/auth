@@ -79,23 +79,27 @@ export class UserMonitoringService {
     // Получаем общее количество пользователей
     const totalUsers = await this.prismaService.user.count();
 
-    // a) Пользователи с привязанным Telegram, но без email
+    // a) Пользователи с привязанным Telegram, но без реального email
     const telegramWithoutEmail = await this.prismaService.user.count({
       where: {
         telegramId: { not: null },
         isTelegramVerified: true,
-        email: {
-          startsWith: 'tg_', // Безопасный email, сгенерированный системой
-        },
+        OR: [
+          { email: null }, // Нет email (telegram-only аккаунт)
+          { email: { startsWith: 'tg_' } }, // Служебный placeholder (legacy)
+        ],
       },
     });
 
-    // b) Пользователи с привязанным Email, но без Telegram
+    // b) Пользователи с привязанным реальным Email, но без Telegram
     const emailWithoutTelegram = await this.prismaService.user.count({
       where: {
-        email: { not: { startsWith: 'tg_' } }, // Реальный email
-        isEmailVerified: true,
-        OR: [{ telegramId: null }, { isTelegramVerified: false }],
+        AND: [
+          { email: { not: null } }, // Реальный email
+          { email: { not: { startsWith: 'tg_' } } }, // Исключаем placeholder
+          { isEmailVerified: true },
+          { OR: [{ telegramId: null }, { isTelegramVerified: false }] },
+        ],
       },
     });
 
@@ -190,12 +194,15 @@ export class UserMonitoringService {
     emailWithoutTelegram: any[];
     inactiveSeedUsers: any[];
   }> {
-    // a) Детали пользователей с Telegram без email
+    // a) Детали пользователей с Telegram без реального email
     const telegramWithoutEmail = await this.prismaService.user.findMany({
       where: {
         telegramId: { not: null },
         isTelegramVerified: true,
-        email: { startsWith: 'tg_' },
+        OR: [
+          { email: null },
+          { email: { startsWith: 'tg_' } },
+        ],
       },
       select: {
         id: true,
@@ -208,12 +215,15 @@ export class UserMonitoringService {
       },
     });
 
-    // b) Детали пользователей с Email без Telegram
+    // b) Детали пользователей с реальным Email без Telegram
     const emailWithoutTelegram = await this.prismaService.user.findMany({
       where: {
-        email: { not: { startsWith: 'tg_' } },
-        isEmailVerified: true,
-        OR: [{ telegramId: null }, { isTelegramVerified: false }],
+        AND: [
+          { email: { not: null } },
+          { email: { not: { startsWith: 'tg_' } } },
+          { isEmailVerified: true },
+          { OR: [{ telegramId: null }, { isTelegramVerified: false }] },
+        ],
       },
       select: {
         id: true,

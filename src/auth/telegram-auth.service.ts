@@ -324,16 +324,24 @@ export class TelegramAuthService {
           authData.telegramId,
         );
 
+        // Приоритет виджета: если ник занят другим пользователем — снимаем дубль
+        await this.freeDuplicateTelegramUsername(
+          authData.username,
+          undefined,
+          authData.telegramId,
+        );
+
         user = await this.prismaService.user.create({
           data: {
             telegramId: authData.telegramId,
-            telegramUsername: authData.username,
+            telegramUsername: authData.username || null,
             telegramFirstName: authData.firstName,
             telegramLastName: authData.lastName,
             telegramPhotoUrl: authData.photoUrl,
             isTelegramVerified: true,
             username: username,
-            email: secureEmail,
+            email: null, // Telegram-аккаунт не занимает email реальным адресом
+            telegramAuth: secureEmail, // Служебный placeholder-логин
             password: securePassword,
             origin: 'telegram', // Аккаунт создан через Telegram identity
           },
@@ -355,10 +363,32 @@ export class TelegramAuthService {
           user.id,
         );
 
+        // Приоритет виджета для ника: обновляем ник, снимаем дубль и пишем аудит для обоих.
+        if (
+          authData.username &&
+          (user.telegramUsername || '') !== (authData.username || '').trim()
+        ) {
+          await this.prismaService.telegramIdentityAudit.create({
+            data: {
+              userId: user.id,
+              eventType: 'telegram_username_updated',
+              previousData: {
+                telegramUsername: user.telegramUsername,
+                changedAt: new Date().toISOString(),
+              },
+            },
+          });
+        }
+        await this.freeDuplicateTelegramUsername(
+          authData.username,
+          user.id,
+          authData.telegramId,
+        );
+
         user = await this.prismaService.user.update({
           where: { id: user.id },
           data: {
-            telegramUsername: authData.username,
+            telegramUsername: authData.username || null,
             telegramFirstName: authData.firstName,
             telegramLastName: authData.lastName,
             telegramPhotoUrl: authData.photoUrl,
@@ -374,7 +404,7 @@ export class TelegramAuthService {
 
       const authenticatedUser: AuthenticatedUser = {
         id: user.id,
-        email: user.email,
+        email: user.email || user.telegramAuth || '',
         telegramId: user.telegramId || '',
         telegramUsername: user.telegramUsername || undefined,
         telegramFirstName: user.telegramFirstName || undefined,
@@ -403,6 +433,52 @@ export class TelegramAuthService {
 
   private generateSecurePassword(): string {
     return crypto.randomBytes(64).toString('hex');
+  }
+
+  /**
+   * Приоритет виджета для telegram-ника: если переданный ник занят другим
+   * пользователем, снимает дубль (telegramUsername -> null) и пишет событие
+   * аудита для владельца дубля в TelegramIdentityAudit.
+   */
+  private async freeDuplicateTelegramUsername(
+    username: string,
+    exceptUserId?: string,
+    exceptTelegramId?: string,
+  ): Promise<void> {
+    const clean = (username || '').trim().replace(/^@/, '');
+    if (!clean) return;
+
+    const not: any[] = [];
+    if (exceptUserId) not.push({ id: exceptUserId });
+    if (exceptTelegramId) not.push({ telegramId: exceptTelegramId });
+
+    const duplicate = await this.prismaService.user.findFirst({
+      where: {
+        telegramUsername: clean,
+        NOT: not,
+      },
+    });
+    if (!duplicate) return;
+
+    await this.prismaService.telegramIdentityAudit.create({
+      data: {
+        userId: duplicate.id,
+        eventType: 'telegram_username_removed',
+        previousData: {
+          telegramUsername: duplicate.telegramUsername,
+          changedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    await this.prismaService.user.update({
+      where: { id: duplicate.id },
+      data: { telegramUsername: null },
+    });
+
+    this.logger.log(
+      `🔁 [TELEGRAM] Freed duplicate telegram username ${clean} from user ${duplicate.id} (priority to widget)`,
+    );
   }
 
   async generateTokens(
