@@ -263,13 +263,9 @@ export class UserIdentityService {
         });
       }
 
-      // Аккаунт, созданный через Telegram: full name управляется Telegram и не может быть изменён.
-      if (user.origin === 'telegram') {
-        throw new RpcException({
-          code: status.PERMISSION_DENIED,
-          message: 'Nickname is managed by Telegram and cannot be changed',
-        });
-      }
+      // Nickname — отдельное отображаемое имя, изменяемое для любого типа аккаунта
+      // (в т.ч. telegram-origin): Telegram синхронизирует telegram*/username,
+      // но не перезаписывает nickname, поэтому редактирование безопасно.
 
       // Обновляем User nickname (nickname не уникален, поэтому проверка на существование не нужна)
       await this.prismaService.user.update({

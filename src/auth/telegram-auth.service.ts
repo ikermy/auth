@@ -530,28 +530,130 @@ export class TelegramAuthService {
         throw new Error('User not found');
       }
 
-      // Привязываем Telegram к существующему аккаунту
-      const baseUserUsername =
-        this.usernameService.generateUsername(
-          authData.telegramId,
-          authData.username,
-        );
-      const username = await this.resolveUniqueUserUsername(
-        baseUserUsername,
-        userId,
-        userId,
+      // ИСТОЧНИК ИСТИНЫ — Telegram: подпись виджета уже проверена в контроллере,
+      // поэтому валидный запрос на присвоение telegram-аккаунта всегда доверяем.
+      // Нормализуем telegram-username (у telegram-аккаунтов он может отсутствовать).
+      const cleanTelegramUsername = (authData.username || '')
+        .trim()
+        .replace(/^@/, '');
+
+      const baseUserUsername = this.usernameService.generateUsername(
+        authData.telegramId,
+        cleanTelegramUsername || undefined,
       );
 
-      // Атомарная операция linking: проверка занятости Telegram ID + запись
-      // в одной транзакции (приоритет linking над фоновой sync — §5.1).
+      // Атомарная операция linking: если Telegram ID уже занят другим аккаунтом,
+      // выполняем полную передачу — прежнего владельца оставляем аккаунтом, но
+      // отзываем у него telegram-идентичность и освобождаем его platform username.
+      // (приоритет linking над фоновой sync — §5.1).
+      let resolvedUsername: string | undefined;
       await this.prismaService.$transaction(async (tx) => {
         const existingTelegramUser = await tx.user.findUnique({
           where: { telegramId: authData.telegramId },
         });
 
         if (existingTelegramUser && existingTelegramUser.id !== userId) {
-          throw new Error(
-            'This Telegram account is already linked to another user',
+          const snapshot = {
+            telegramId: existingTelegramUser.telegramId,
+            telegramUsername: existingTelegramUser.telegramUsername,
+            telegramFirstName: existingTelegramUser.telegramFirstName,
+            telegramLastName: existingTelegramUser.telegramLastName,
+            telegramPhotoUrl: existingTelegramUser.telegramPhotoUrl,
+            isTelegramVerified: existingTelegramUser.isTelegramVerified,
+            username: existingTelegramUser.username,
+            changedAt: new Date().toISOString(),
+          };
+
+          await tx.telegramIdentityAudit.create({
+            data: {
+              userId: existingTelegramUser.id,
+              eventType: 'telegram_account_revoked',
+              previousData: snapshot,
+            },
+          });
+
+          const revokeData: any = {
+            telegramId: null,
+            telegramUsername: null,
+            telegramFirstName: null,
+            telegramLastName: null,
+            telegramPhotoUrl: null,
+            isTelegramVerified: false,
+          };
+          if (
+            existingTelegramUser.username &&
+            existingTelegramUser.username === baseUserUsername
+          ) {
+            revokeData.username = null;
+          }
+
+          await tx.user.update({
+            where: { id: existingTelegramUser.id },
+            data: revokeData,
+          });
+
+          this.logger.log(
+            `↩️ [TELEGRAM] Revoked occupied telegram ${authData.telegramId} from user ${existingTelegramUser.id} (transferred to ${userId})`,
+          );
+        }
+
+        // Аудит привязки к новому владельцу.
+        await tx.telegramIdentityAudit.create({
+          data: {
+            userId,
+            eventType: 'telegram_account_linked',
+            previousData: {
+              telegramId: authData.telegramId,
+              telegramUsername: cleanTelegramUsername || null,
+              changedAt: new Date().toISOString(),
+            },
+          },
+        });
+
+        // Освобождаем дубли telegram-ника у других аккаунтов.
+        const usernameDuplicates = await tx.user.findMany({
+          where: {
+            telegramUsername: cleanTelegramUsername,
+            id: { not: userId },
+          },
+        });
+        for (const dup of usernameDuplicates) {
+          await tx.telegramIdentityAudit.create({
+            data: {
+              userId: dup.id,
+              eventType: 'telegram_username_removed',
+              previousData: {
+                telegramUsername: dup.telegramUsername,
+                changedAt: new Date().toISOString(),
+              },
+            },
+          });
+          await tx.user.update({
+            where: { id: dup.id },
+            data: { telegramUsername: null },
+          });
+        }
+
+        // Желаемый platform username резолвим внутри транзакции уже ПОСЛЕ того,
+        // как освободили имя прежнего владельца — иначе новый владелец получил бы
+        // fallback вместо точного имени. Проверку делаем через tx (та же транзакция).
+        const baseTaken = baseUserUsername
+          ? await tx.user.findUnique({
+              where: { username: baseUserUsername },
+              select: { id: true },
+            })
+          : null;
+
+        if (!baseUserUsername) {
+          resolvedUsername = undefined;
+        } else if (!baseTaken || baseTaken.id === userId) {
+          resolvedUsername = baseUserUsername;
+        } else {
+          // Точное имя занято кем-то другим — уходим на стабильный fallback.
+          const suffix = userId.replace(/-/g, '').slice(0, 4).toLowerCase();
+          resolvedUsername = this.usernameService.generateAlternativeUsername(
+            baseUserUsername,
+            suffix,
           );
         }
 
@@ -559,12 +661,12 @@ export class TelegramAuthService {
           where: { id: userId },
           data: {
             telegramId: authData.telegramId,
-            telegramUsername: authData.username,
+            telegramUsername: cleanTelegramUsername || null,
             telegramFirstName: authData.firstName,
-            telegramLastName: authData.lastName,
-            telegramPhotoUrl: authData.photoUrl,
+            telegramLastName: authData.lastName || null,
+            telegramPhotoUrl: authData.photoUrl || null,
             isTelegramVerified: true,
-            username: username, // Устанавливаем User username
+            username: resolvedUsername, // Устанавливаем User username
           },
         });
       });

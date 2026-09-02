@@ -248,7 +248,11 @@ describe('TelegramAuthService', () => {
           cb({
             user: {
               findUnique: jest.fn().mockResolvedValue(null),
+              findMany: jest.fn().mockResolvedValue([]),
               update: jest.fn().mockResolvedValue({ id: 'user-id' }),
+            },
+            telegramIdentityAudit: {
+              create: jest.fn().mockResolvedValue({}),
             },
           }),
       );
@@ -261,25 +265,41 @@ describe('TelegramAuthService', () => {
       expect(result).toBe(true);
     });
 
-    it('should reject when telegram account is already linked to another user', async () => {
+    it('should take over telegram account already linked to another user', async () => {
       // Пользователь существует
       (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
         id: 'user-id',
       } as any);
-      // В транзакции находим, что Telegram ID занят другим
+      const txUpdate = jest.fn().mockResolvedValue({});
+      const txAudit = jest.fn().mockResolvedValue({});
+      // В транзакции находим, что Telegram ID занят другим — происходит передача.
       (prismaService.$transaction as jest.Mock).mockImplementation(
         async (cb: any) =>
           cb({
             user: {
-              findUnique: jest.fn().mockResolvedValue({ id: 'other-user-id' }),
-              update: jest.fn(),
+              findUnique: jest.fn().mockResolvedValue({
+                id: 'other-user-id',
+                telegramUsername: 'johndoe',
+                username: 'johndoe',
+              }),
+              findMany: jest.fn().mockResolvedValue([]),
+              update: txUpdate,
+            },
+            telegramIdentityAudit: {
+              create: txAudit,
             },
           }),
       );
 
-      await expect(
-        service.linkTelegramToExistingAccount('user-id', mockAuthData),
-      ).rejects.toThrow(RpcException);
+      const result = await service.linkTelegramToExistingAccount(
+        'user-id',
+        mockAuthData,
+      );
+
+      expect(result).toBe(true);
+      // Прежний владелец отозван (telegramId -> null) и прологирован в аудите.
+      expect(txUpdate).toHaveBeenCalled();
+      expect(txAudit).toHaveBeenCalled();
     });
 
     it('should reject when user does not exist', async () => {
