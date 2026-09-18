@@ -7,6 +7,7 @@ import { ServiceAccessController } from './service-access.controller';
 import { TelegramAuthService } from './telegram-auth.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
+import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
 import { SecurityModule } from '../security/security.module';
 import { HttpModule } from '@nestjs/axios';
 import { GrpcAuthGuard } from './guards/grpc-auth.guard';
@@ -27,6 +28,7 @@ import { GrpcAuthGuard } from './guards/grpc-auth.guard';
     TelegramAuthService,
     UsernameService,
     UserIdentityService,
+    TelegramUsernameHistoryService,
     {
       provide: APP_GUARD,
       useClass: GrpcAuthGuard,

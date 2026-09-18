@@ -42,7 +42,6 @@ services:
       TLS_ENABLED: "${TLS_ENABLED:-false}"
       TOTP_ISSUER: "${TOTP_ISSUER:-Auth Microservice}"
       ENCRYPTION_KEY: "${ENCRYPTION_KEY:-dev-encryption-key-32-characters-long!}"
-      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       ANOMALY_THRESHOLD: "${ANOMALY_THRESHOLD:-0.7}"
     ports:
       - "50051:50051"

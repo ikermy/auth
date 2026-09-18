@@ -6,6 +6,7 @@ import { RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
+import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
@@ -102,6 +103,7 @@ export class TelegramAuthService {
     private readonly configService: ConfigService,
     private readonly usernameService: UsernameService,
     private readonly userIdentityService: UserIdentityService,
+    private readonly telegramUsernameHistory: TelegramUsernameHistoryService,
     private readonly httpService: HttpService,
   ) {}
 
@@ -310,14 +312,18 @@ export class TelegramAuthService {
         });
       }
 
+      const cleanTelegramUsername =
+        (authData.username || '').trim().replace(/^@/, '') || null;
+
       if (!user) {
         // Создаем нового пользователя с безопасными данными
         const secureEmail = this.generateSecureEmail(authData.telegramId);
         const securePassword = this.generateSecurePassword();
+        // Стартовый username присваивается ОДИН раз и далее не меняется.
         const baseUserUsername =
           this.usernameService.generateUsername(
             authData.telegramId,
-            authData.username,
+            cleanTelegramUsername || undefined,
           );
         const username = await this.resolveUniqueUserUsername(
           baseUserUsername,
@@ -326,7 +332,7 @@ export class TelegramAuthService {
 
         // Приоритет виджета: если ник занят другим пользователем — снимаем дубль
         await this.freeDuplicateTelegramUsername(
-          authData.username,
+          cleanTelegramUsername || '',
           undefined,
           authData.telegramId,
         );
@@ -334,7 +340,7 @@ export class TelegramAuthService {
         user = await this.prismaService.user.create({
           data: {
             telegramId: authData.telegramId,
-            telegramUsername: authData.username || null,
+            telegramUsername: cleanTelegramUsername,
             telegramFirstName: authData.firstName,
             telegramLastName: authData.lastName,
             telegramPhotoUrl: authData.photoUrl,
@@ -346,59 +352,64 @@ export class TelegramAuthService {
             origin: 'telegram', // Аккаунт создан через Telegram identity
           },
         });
+        if (cleanTelegramUsername) {
+          await this.telegramUsernameHistory.record(
+            user.id,
+            cleanTelegramUsername,
+            null,
+            'set',
+            'telegram_widget',
+          );
+        }
         isNewUser = true;
         this.logger.log(
           `Created new user via Telegram: ${authData.telegramId} with User username: ${username}`,
         );
       } else {
-        // Обновляем данные существующего пользователя
-        const baseUserUsername =
-          this.usernameService.generateUsername(
-            authData.telegramId,
-            authData.username,
-          );
-        const newUserUsername = await this.resolveUniqueUserUsername(
-          baseUserUsername,
-          user.id,
-          user.id,
-        );
+        // Обновляем данные существующего пользователя.
+        // Platform username НЕ трогаем: он не связан с Telegram (immutable).
+        const previousTelegramUsername = user.telegramUsername;
 
-        // Приоритет виджета для ника: обновляем ник, снимаем дубль и пишем аудит для обоих.
-        if (
-          authData.username &&
-          (user.telegramUsername || '') !== (authData.username || '').trim()
-        ) {
+        if (previousTelegramUsername !== cleanTelegramUsername) {
           await this.prismaService.telegramIdentityAudit.create({
             data: {
               userId: user.id,
               eventType: 'telegram_username_updated',
               previousData: {
-                telegramUsername: user.telegramUsername,
+                telegramUsername: previousTelegramUsername,
                 changedAt: new Date().toISOString(),
               },
             },
           });
         }
+
+        // Приоритет виджета для ника: снимаем дубль у других аккаунтов.
         await this.freeDuplicateTelegramUsername(
-          authData.username,
+          cleanTelegramUsername || '',
           user.id,
           authData.telegramId,
+        );
+
+        await this.telegramUsernameHistory.recordIfChanged(
+          user.id,
+          previousTelegramUsername,
+          cleanTelegramUsername,
+          'telegram_widget',
         );
 
         user = await this.prismaService.user.update({
           where: { id: user.id },
           data: {
-            telegramUsername: authData.username || null,
+            telegramUsername: cleanTelegramUsername,
             telegramFirstName: authData.firstName,
             telegramLastName: authData.lastName,
             telegramPhotoUrl: authData.photoUrl,
             isTelegramVerified: true,
-            username: newUserUsername, // Синхронизируем User username с Telegram
             lastLoginAt: new Date(),
           },
         });
         this.logger.log(
-          `Updated existing user via Telegram: ${authData.telegramId} with User username: ${newUserUsername}`,
+          `Updated existing user via Telegram: ${authData.telegramId} (username unchanged: ${user.username})`,
         );
       }
 
@@ -476,6 +487,14 @@ export class TelegramAuthService {
       data: { telegramUsername: null },
     });
 
+    await this.telegramUsernameHistory.record(
+      duplicate.id,
+      null,
+      duplicate.telegramUsername,
+      'removed',
+      'telegram_widget',
+    );
+
     this.logger.log(
       `🔁 [TELEGRAM] Freed duplicate telegram username ${clean} from user ${duplicate.id} (priority to widget)`,
     );
@@ -527,90 +546,55 @@ export class TelegramAuthService {
       });
 
       if (!user) {
-        throw new Error('User not found');
+        throw new RpcException({
+          code: status.NOT_FOUND,
+          message: 'User not found',
+        });
       }
 
-      // ИСТОЧНИК ИСТИНЫ — Telegram: подпись виджета уже проверена в контроллере,
-      // поэтому валидный запрос на присвоение telegram-аккаунта всегда доверяем.
+      // ИСТОЧНИК ИСТИНЫ — Telegram: подпись виджета уже проверена в контроллере.
       // Нормализуем telegram-username (у telegram-аккаунтов он может отсутствовать).
-      const cleanTelegramUsername = (authData.username || '')
-        .trim()
-        .replace(/^@/, '');
+      const cleanTelegramUsername =
+        (authData.username || '').trim().replace(/^@/, '') || null;
 
-      const baseUserUsername = this.usernameService.generateUsername(
-        authData.telegramId,
-        cleanTelegramUsername || undefined,
-      );
-
-      // Атомарная операция linking: если Telegram ID уже занят другим аккаунтом,
-      // выполняем полную передачу — прежнего владельца оставляем аккаунтом, но
-      // отзываем у него telegram-идентичность и освобождаем его platform username.
-      // (приоритет linking над фоновой sync — §5.1).
-      let resolvedUsername: string | undefined;
       await this.prismaService.$transaction(async (tx) => {
+        // 1. telegramId не привязываем, если он занят ДРУГИМ аккаунтом — ни при каких условиях.
         const existingTelegramUser = await tx.user.findUnique({
           where: { telegramId: authData.telegramId },
         });
-
         if (existingTelegramUser && existingTelegramUser.id !== userId) {
-          const snapshot = {
-            telegramId: existingTelegramUser.telegramId,
-            telegramUsername: existingTelegramUser.telegramUsername,
-            telegramFirstName: existingTelegramUser.telegramFirstName,
-            telegramLastName: existingTelegramUser.telegramLastName,
-            telegramPhotoUrl: existingTelegramUser.telegramPhotoUrl,
-            isTelegramVerified: existingTelegramUser.isTelegramVerified,
-            username: existingTelegramUser.username,
-            changedAt: new Date().toISOString(),
-          };
-
-          await tx.telegramIdentityAudit.create({
-            data: {
-              userId: existingTelegramUser.id,
-              eventType: 'telegram_account_revoked',
-              previousData: snapshot,
-            },
+          throw new RpcException({
+            code: status.ALREADY_EXISTS,
+            message: 'Telegram ID is already linked to another account',
           });
-
-          const revokeData: any = {
-            telegramId: null,
-            telegramUsername: null,
-            telegramFirstName: null,
-            telegramLastName: null,
-            telegramPhotoUrl: null,
-            isTelegramVerified: false,
-          };
-          if (
-            existingTelegramUser.username &&
-            existingTelegramUser.username === baseUserUsername
-          ) {
-            revokeData.username = null;
-          }
-
-          await tx.user.update({
-            where: { id: existingTelegramUser.id },
-            data: revokeData,
-          });
-
-          this.logger.log(
-            `↩️ [TELEGRAM] Revoked occupied telegram ${authData.telegramId} from user ${existingTelegramUser.id} (transferred to ${userId})`,
-          );
         }
 
-        // Аудит привязки к новому владельцу.
+        // 2. Свой уже привязанный telegramId не меняем (его нельзя отобрать/заменить).
+        if (user.telegramId && user.telegramId !== authData.telegramId) {
+          throw new RpcException({
+            code: status.FAILED_PRECONDITION,
+            message: 'Telegram ID cannot be changed once linked',
+          });
+        }
+
+        const previousTelegramUsername = user.telegramUsername;
+
+        // Аудит привязки/обновления данных.
         await tx.telegramIdentityAudit.create({
           data: {
             userId,
-            eventType: 'telegram_account_linked',
+            eventType: user.telegramId
+              ? 'telegram_identity_updated'
+              : 'telegram_account_linked',
             previousData: {
               telegramId: authData.telegramId,
-              telegramUsername: cleanTelegramUsername || null,
+              telegramUsername: cleanTelegramUsername,
               changedAt: new Date().toISOString(),
             },
           },
         });
 
-        // Освобождаем дубли telegram-ника у других аккаунтов.
+        // 3. Освобождаем дубли telegram-ника у других аккаунтов (+ история).
         const usernameDuplicates = await tx.user.findMany({
           where: {
             telegramUsername: cleanTelegramUsername,
@@ -632,41 +616,35 @@ export class TelegramAuthService {
             where: { id: dup.id },
             data: { telegramUsername: null },
           });
-        }
-
-        // Желаемый platform username резолвим внутри транзакции уже ПОСЛЕ того,
-        // как освободили имя прежнего владельца — иначе новый владелец получил бы
-        // fallback вместо точного имени. Проверку делаем через tx (та же транзакция).
-        const baseTaken = baseUserUsername
-          ? await tx.user.findUnique({
-              where: { username: baseUserUsername },
-              select: { id: true },
-            })
-          : null;
-
-        if (!baseUserUsername) {
-          resolvedUsername = undefined;
-        } else if (!baseTaken || baseTaken.id === userId) {
-          resolvedUsername = baseUserUsername;
-        } else {
-          // Точное имя занято кем-то другим — уходим на стабильный fallback.
-          const suffix = userId.replace(/-/g, '').slice(0, 4).toLowerCase();
-          resolvedUsername = this.usernameService.generateAlternativeUsername(
-            baseUserUsername,
-            suffix,
+          await this.telegramUsernameHistory.record(
+            dup.id,
+            null,
+            dup.telegramUsername,
+            'removed',
+            'telegram_widget',
+            tx,
           );
         }
 
+        // 4. История изменения telegram-ника текущего пользователя.
+        await this.telegramUsernameHistory.recordIfChanged(
+          userId,
+          previousTelegramUsername,
+          cleanTelegramUsername,
+          'telegram_widget',
+          tx,
+        );
+
+        // 5. Привязываем/обновляем telegram-идентичность. Platform username НЕ трогаем.
         await tx.user.update({
           where: { id: userId },
           data: {
             telegramId: authData.telegramId,
-            telegramUsername: cleanTelegramUsername || null,
+            telegramUsername: cleanTelegramUsername,
             telegramFirstName: authData.firstName,
             telegramLastName: authData.lastName || null,
             telegramPhotoUrl: authData.photoUrl || null,
             isTelegramVerified: true,
-            username: resolvedUsername, // Устанавливаем User username
           },
         });
       });
@@ -679,6 +657,11 @@ export class TelegramAuthService {
       this.logger.error(
         `Error linking Telegram account: ${(error as Error).message}`,
       );
+
+      if (error instanceof RpcException) {
+        throw error;
+      }
+
       throw new RpcException({
         code: status.INTERNAL,
         message: (error as Error).message,
@@ -802,62 +785,9 @@ export class TelegramAuthService {
     }
   }
 
-  // Обновление User username при логине через Telegram
-  async updateUserUsernameOnLogin(telegramId: string): Promise<void> {
-    try {
-      // Получаем пользователя из БД
-      const user = await this.prismaService.user.findUnique({
-        where: { telegramId },
-        select: {
-          id: true,
-          telegramUsername: true,
-          username: true,
-        },
-      });
-
-      if (!user) {
-        return;
-      }
-
-      // Генерируем новый User username на основе текущих данных
-      const baseUserUsername =
-        this.usernameService.generateUsername(
-          telegramId,
-          user.telegramUsername || undefined,
-        );
-
-      // Резолвим уникальный User username (стабильный fallback при конфликте)
-      const newUserUsername = await this.resolveUniqueUserUsername(
-        baseUserUsername,
-        user.id,
-        user.id,
-      );
-
-      // Проверяем, нужно ли обновлять
-      if (newUserUsername !== user.username) {
-        await this.prismaService.user.update({
-          where: { id: user.id },
-          data: {
-            username: newUserUsername,
-          },
-        });
-
-        this.logger.log(
-          `🔄 [USER] Updated username for user ${user.id}: ${user.username} -> ${newUserUsername}`,
-        );
-      }
-    } catch (error) {
-      this.logger.error(
-        `Error updating User username on login: ${(error as Error).message}`,
-      );
-    }
-  }
-
   /**
-   * Резолвит свободный User username со стабильным fallback при конфликте (TG-03).
-   * @param baseUsername желаемое имя
-   * @param stableId стабильный идентификатор для суффикса (User ID или Telegram ID)
-   * @param userId текущий пользователь, которому принадлежит точное имя (если применимо)
+   * Резолвит свободный User username со стабильным fallback при конфликте.
+   * Используется ТОЛЬКО при создании TG-аккаунта (username immutable далее).
    */
   private async resolveUniqueUserUsername(
     baseUsername: string,

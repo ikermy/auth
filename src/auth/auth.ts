@@ -251,38 +251,6 @@ export interface LinkEmailResponse {
   message: string;
 }
 
-/** Sync User Username with Telegram data */
-export interface SyncUsernameRequest {
-  /** max 100 chars */
-  userId: string;
-}
-
-export interface SyncUsernameResponse {
-  success: boolean;
-  message: string;
-  /** Updated username */
-  username: string;
-}
-
-/** User identity management messages */
-export interface ChangeUsernameRequest {
-  /** max 100 chars */
-  userId: string;
-  /** max 50 chars */
-  newUsername: string;
-}
-
-export interface ChangeUsernameResponse {
-  success: boolean;
-  message: string;
-  /** Updated username */
-  username: string;
-  /** Whether alternative usernames are available */
-  hasAlternatives: boolean;
-  /** Suggested alternative usernames */
-  alternativeUsernames: string[];
-}
-
 export interface ChangeNicknameRequest {
   /** max 100 chars */
   userId: string;
@@ -295,20 +263,6 @@ export interface ChangeNicknameResponse {
   message: string;
   /** Updated nickname */
   nickname: string;
-}
-
-export interface ChangeTelegramUsernameRequest {
-  /** max 100 chars */
-  userId: string;
-  /** max 50 chars (без @) */
-  telegramUsername: string;
-}
-
-export interface ChangeTelegramUsernameResponse {
-  success: boolean;
-  message: string;
-  /** Updated telegram username */
-  telegramUsername: string;
 }
 
 export interface ChangeAvatarRequest {
@@ -367,6 +321,34 @@ export interface GetUserProfileResponse {
   origin: string;
   /** Признак подтверждённого Telegram */
   isTelegramVerified: boolean;
+}
+
+export interface TelegramUsernameHistoryEntry {
+  id: string;
+  /** новое значение (пусто для removed) */
+  telegramUsername: string;
+  /** предыдущее значение (пусто) */
+  previousTelegramUsername: string;
+  /** set | changed | removed | migrated */
+  eventType: string;
+  /** telegram_widget | audit_migration */
+  source: string;
+  /** ISO timestamp */
+  changedAt: string;
+}
+
+export interface GetMyTelegramUsernameHistoryRequest {
+  /** 1-based, default 1 */
+  page: number;
+  /** default 20, max 100 */
+  limit: number;
+}
+
+export interface GetMyTelegramUsernameHistoryResponse {
+  entries: TelegramUsernameHistoryEntry[];
+  total: number;
+  page: number;
+  limit: number;
 }
 
 export interface SuggestUsernameAlternativesRequest {
@@ -2571,274 +2553,6 @@ export const LinkEmailResponse: MessageFns<LinkEmailResponse> = {
   },
 };
 
-function createBaseSyncUsernameRequest(): SyncUsernameRequest {
-  return { userId: "" };
-}
-
-export const SyncUsernameRequest: MessageFns<SyncUsernameRequest> = {
-  encode(message: SyncUsernameRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.userId !== "") {
-      writer.uint32(10).string(message.userId);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): SyncUsernameRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseSyncUsernameRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.userId = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  create<I extends Exact<DeepPartial<SyncUsernameRequest>, I>>(base?: I): SyncUsernameRequest {
-    return SyncUsernameRequest.fromPartial(base ?? ({} as any));
-  },
-  fromPartial<I extends Exact<DeepPartial<SyncUsernameRequest>, I>>(object: I): SyncUsernameRequest {
-    const message = createBaseSyncUsernameRequest();
-    message.userId = object.userId ?? "";
-    return message;
-  },
-};
-
-function createBaseSyncUsernameResponse(): SyncUsernameResponse {
-  return { success: false, message: "", username: "" };
-}
-
-export const SyncUsernameResponse: MessageFns<SyncUsernameResponse> = {
-  encode(message: SyncUsernameResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.success !== false) {
-      writer.uint32(8).bool(message.success);
-    }
-    if (message.message !== "") {
-      writer.uint32(18).string(message.message);
-    }
-    if (message.username !== "") {
-      writer.uint32(26).string(message.username);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): SyncUsernameResponse {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseSyncUsernameResponse();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.success = reader.bool();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.message = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.username = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  create<I extends Exact<DeepPartial<SyncUsernameResponse>, I>>(base?: I): SyncUsernameResponse {
-    return SyncUsernameResponse.fromPartial(base ?? ({} as any));
-  },
-  fromPartial<I extends Exact<DeepPartial<SyncUsernameResponse>, I>>(object: I): SyncUsernameResponse {
-    const message = createBaseSyncUsernameResponse();
-    message.success = object.success ?? false;
-    message.message = object.message ?? "";
-    message.username = object.username ?? "";
-    return message;
-  },
-};
-
-function createBaseChangeUsernameRequest(): ChangeUsernameRequest {
-  return { userId: "", newUsername: "" };
-}
-
-export const ChangeUsernameRequest: MessageFns<ChangeUsernameRequest> = {
-  encode(message: ChangeUsernameRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.userId !== "") {
-      writer.uint32(10).string(message.userId);
-    }
-    if (message.newUsername !== "") {
-      writer.uint32(18).string(message.newUsername);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ChangeUsernameRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseChangeUsernameRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.userId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.newUsername = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  create<I extends Exact<DeepPartial<ChangeUsernameRequest>, I>>(base?: I): ChangeUsernameRequest {
-    return ChangeUsernameRequest.fromPartial(base ?? ({} as any));
-  },
-  fromPartial<I extends Exact<DeepPartial<ChangeUsernameRequest>, I>>(object: I): ChangeUsernameRequest {
-    const message = createBaseChangeUsernameRequest();
-    message.userId = object.userId ?? "";
-    message.newUsername = object.newUsername ?? "";
-    return message;
-  },
-};
-
-function createBaseChangeUsernameResponse(): ChangeUsernameResponse {
-  return { success: false, message: "", username: "", hasAlternatives: false, alternativeUsernames: [] };
-}
-
-export const ChangeUsernameResponse: MessageFns<ChangeUsernameResponse> = {
-  encode(message: ChangeUsernameResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.success !== false) {
-      writer.uint32(8).bool(message.success);
-    }
-    if (message.message !== "") {
-      writer.uint32(18).string(message.message);
-    }
-    if (message.username !== "") {
-      writer.uint32(26).string(message.username);
-    }
-    if (message.hasAlternatives !== false) {
-      writer.uint32(32).bool(message.hasAlternatives);
-    }
-    for (const v of message.alternativeUsernames) {
-      writer.uint32(42).string(v!);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ChangeUsernameResponse {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseChangeUsernameResponse();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.success = reader.bool();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.message = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.username = reader.string();
-          continue;
-        }
-        case 4: {
-          if (tag !== 32) {
-            break;
-          }
-
-          message.hasAlternatives = reader.bool();
-          continue;
-        }
-        case 5: {
-          if (tag !== 42) {
-            break;
-          }
-
-          message.alternativeUsernames.push(reader.string());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  create<I extends Exact<DeepPartial<ChangeUsernameResponse>, I>>(base?: I): ChangeUsernameResponse {
-    return ChangeUsernameResponse.fromPartial(base ?? ({} as any));
-  },
-  fromPartial<I extends Exact<DeepPartial<ChangeUsernameResponse>, I>>(object: I): ChangeUsernameResponse {
-    const message = createBaseChangeUsernameResponse();
-    message.success = object.success ?? false;
-    message.message = object.message ?? "";
-    message.username = object.username ?? "";
-    message.hasAlternatives = object.hasAlternatives ?? false;
-    message.alternativeUsernames = object.alternativeUsernames?.map((e) => e) || [];
-    return message;
-  },
-};
-
 function createBaseChangeNicknameRequest(): ChangeNicknameRequest {
   return { userId: "", newNickname: "" };
 }
@@ -2963,138 +2677,6 @@ export const ChangeNicknameResponse: MessageFns<ChangeNicknameResponse> = {
     message.success = object.success ?? false;
     message.message = object.message ?? "";
     message.nickname = object.nickname ?? "";
-    return message;
-  },
-};
-
-function createBaseChangeTelegramUsernameRequest(): ChangeTelegramUsernameRequest {
-  return { userId: "", telegramUsername: "" };
-}
-
-export const ChangeTelegramUsernameRequest: MessageFns<ChangeTelegramUsernameRequest> = {
-  encode(message: ChangeTelegramUsernameRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.userId !== "") {
-      writer.uint32(10).string(message.userId);
-    }
-    if (message.telegramUsername !== "") {
-      writer.uint32(18).string(message.telegramUsername);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ChangeTelegramUsernameRequest {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseChangeTelegramUsernameRequest();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.userId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.telegramUsername = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  create<I extends Exact<DeepPartial<ChangeTelegramUsernameRequest>, I>>(base?: I): ChangeTelegramUsernameRequest {
-    return ChangeTelegramUsernameRequest.fromPartial(base ?? ({} as any));
-  },
-  fromPartial<I extends Exact<DeepPartial<ChangeTelegramUsernameRequest>, I>>(
-    object: I,
-  ): ChangeTelegramUsernameRequest {
-    const message = createBaseChangeTelegramUsernameRequest();
-    message.userId = object.userId ?? "";
-    message.telegramUsername = object.telegramUsername ?? "";
-    return message;
-  },
-};
-
-function createBaseChangeTelegramUsernameResponse(): ChangeTelegramUsernameResponse {
-  return { success: false, message: "", telegramUsername: "" };
-}
-
-export const ChangeTelegramUsernameResponse: MessageFns<ChangeTelegramUsernameResponse> = {
-  encode(message: ChangeTelegramUsernameResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.success !== false) {
-      writer.uint32(8).bool(message.success);
-    }
-    if (message.message !== "") {
-      writer.uint32(18).string(message.message);
-    }
-    if (message.telegramUsername !== "") {
-      writer.uint32(26).string(message.telegramUsername);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): ChangeTelegramUsernameResponse {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseChangeTelegramUsernameResponse();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 8) {
-            break;
-          }
-
-          message.success = reader.bool();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.message = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.telegramUsername = reader.string();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  create<I extends Exact<DeepPartial<ChangeTelegramUsernameResponse>, I>>(base?: I): ChangeTelegramUsernameResponse {
-    return ChangeTelegramUsernameResponse.fromPartial(base ?? ({} as any));
-  },
-  fromPartial<I extends Exact<DeepPartial<ChangeTelegramUsernameResponse>, I>>(
-    object: I,
-  ): ChangeTelegramUsernameResponse {
-    const message = createBaseChangeTelegramUsernameResponse();
-    message.success = object.success ?? false;
-    message.message = object.message ?? "";
-    message.telegramUsername = object.telegramUsername ?? "";
     return message;
   },
 };
@@ -3588,6 +3170,260 @@ export const GetUserProfileResponse: MessageFns<GetUserProfileResponse> = {
     message.telegramPhotoUrl = object.telegramPhotoUrl ?? "";
     message.origin = object.origin ?? "";
     message.isTelegramVerified = object.isTelegramVerified ?? false;
+    return message;
+  },
+};
+
+function createBaseTelegramUsernameHistoryEntry(): TelegramUsernameHistoryEntry {
+  return { id: "", telegramUsername: "", previousTelegramUsername: "", eventType: "", source: "", changedAt: "" };
+}
+
+export const TelegramUsernameHistoryEntry: MessageFns<TelegramUsernameHistoryEntry> = {
+  encode(message: TelegramUsernameHistoryEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.id !== "") {
+      writer.uint32(10).string(message.id);
+    }
+    if (message.telegramUsername !== "") {
+      writer.uint32(18).string(message.telegramUsername);
+    }
+    if (message.previousTelegramUsername !== "") {
+      writer.uint32(26).string(message.previousTelegramUsername);
+    }
+    if (message.eventType !== "") {
+      writer.uint32(34).string(message.eventType);
+    }
+    if (message.source !== "") {
+      writer.uint32(42).string(message.source);
+    }
+    if (message.changedAt !== "") {
+      writer.uint32(50).string(message.changedAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): TelegramUsernameHistoryEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseTelegramUsernameHistoryEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.id = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.telegramUsername = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.previousTelegramUsername = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.eventType = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.source = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.changedAt = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  create<I extends Exact<DeepPartial<TelegramUsernameHistoryEntry>, I>>(base?: I): TelegramUsernameHistoryEntry {
+    return TelegramUsernameHistoryEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<TelegramUsernameHistoryEntry>, I>>(object: I): TelegramUsernameHistoryEntry {
+    const message = createBaseTelegramUsernameHistoryEntry();
+    message.id = object.id ?? "";
+    message.telegramUsername = object.telegramUsername ?? "";
+    message.previousTelegramUsername = object.previousTelegramUsername ?? "";
+    message.eventType = object.eventType ?? "";
+    message.source = object.source ?? "";
+    message.changedAt = object.changedAt ?? "";
+    return message;
+  },
+};
+
+function createBaseGetMyTelegramUsernameHistoryRequest(): GetMyTelegramUsernameHistoryRequest {
+  return { page: 0, limit: 0 };
+}
+
+export const GetMyTelegramUsernameHistoryRequest: MessageFns<GetMyTelegramUsernameHistoryRequest> = {
+  encode(message: GetMyTelegramUsernameHistoryRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.page !== 0) {
+      writer.uint32(8).int32(message.page);
+    }
+    if (message.limit !== 0) {
+      writer.uint32(16).int32(message.limit);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetMyTelegramUsernameHistoryRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetMyTelegramUsernameHistoryRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.page = reader.int32();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.limit = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  create<I extends Exact<DeepPartial<GetMyTelegramUsernameHistoryRequest>, I>>(
+    base?: I,
+  ): GetMyTelegramUsernameHistoryRequest {
+    return GetMyTelegramUsernameHistoryRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetMyTelegramUsernameHistoryRequest>, I>>(
+    object: I,
+  ): GetMyTelegramUsernameHistoryRequest {
+    const message = createBaseGetMyTelegramUsernameHistoryRequest();
+    message.page = object.page ?? 0;
+    message.limit = object.limit ?? 0;
+    return message;
+  },
+};
+
+function createBaseGetMyTelegramUsernameHistoryResponse(): GetMyTelegramUsernameHistoryResponse {
+  return { entries: [], total: 0, page: 0, limit: 0 };
+}
+
+export const GetMyTelegramUsernameHistoryResponse: MessageFns<GetMyTelegramUsernameHistoryResponse> = {
+  encode(message: GetMyTelegramUsernameHistoryResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.entries) {
+      TelegramUsernameHistoryEntry.encode(v!, writer.uint32(10).fork()).join();
+    }
+    if (message.total !== 0) {
+      writer.uint32(16).int32(message.total);
+    }
+    if (message.page !== 0) {
+      writer.uint32(24).int32(message.page);
+    }
+    if (message.limit !== 0) {
+      writer.uint32(32).int32(message.limit);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetMyTelegramUsernameHistoryResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetMyTelegramUsernameHistoryResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.entries.push(TelegramUsernameHistoryEntry.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.total = reader.int32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.page = reader.int32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.limit = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  create<I extends Exact<DeepPartial<GetMyTelegramUsernameHistoryResponse>, I>>(
+    base?: I,
+  ): GetMyTelegramUsernameHistoryResponse {
+    return GetMyTelegramUsernameHistoryResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetMyTelegramUsernameHistoryResponse>, I>>(
+    object: I,
+  ): GetMyTelegramUsernameHistoryResponse {
+    const message = createBaseGetMyTelegramUsernameHistoryResponse();
+    message.entries = object.entries?.map((e) => TelegramUsernameHistoryEntry.fromPartial(e)) || [];
+    message.total = object.total ?? 0;
+    message.page = object.page ?? 0;
+    message.limit = object.limit ?? 0;
     return message;
   },
 };
@@ -5071,28 +4907,7 @@ export const AuthServiceService = {
     responseSerialize: (value: LinkEmailResponse): Buffer => Buffer.from(LinkEmailResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): LinkEmailResponse => LinkEmailResponse.decode(value),
   },
-  syncUsername: {
-    path: "/auth.AuthService/syncUsername",
-    requestStream: false,
-    responseStream: false,
-    requestSerialize: (value: SyncUsernameRequest): Buffer => Buffer.from(SyncUsernameRequest.encode(value).finish()),
-    requestDeserialize: (value: Buffer): SyncUsernameRequest => SyncUsernameRequest.decode(value),
-    responseSerialize: (value: SyncUsernameResponse): Buffer =>
-      Buffer.from(SyncUsernameResponse.encode(value).finish()),
-    responseDeserialize: (value: Buffer): SyncUsernameResponse => SyncUsernameResponse.decode(value),
-  },
   /** User identity management */
-  changeUsername: {
-    path: "/auth.AuthService/changeUsername",
-    requestStream: false,
-    responseStream: false,
-    requestSerialize: (value: ChangeUsernameRequest): Buffer =>
-      Buffer.from(ChangeUsernameRequest.encode(value).finish()),
-    requestDeserialize: (value: Buffer): ChangeUsernameRequest => ChangeUsernameRequest.decode(value),
-    responseSerialize: (value: ChangeUsernameResponse): Buffer =>
-      Buffer.from(ChangeUsernameResponse.encode(value).finish()),
-    responseDeserialize: (value: Buffer): ChangeUsernameResponse => ChangeUsernameResponse.decode(value),
-  },
   changeNickname: {
     path: "/auth.AuthService/changeNickname",
     requestStream: false,
@@ -5103,18 +4918,6 @@ export const AuthServiceService = {
     responseSerialize: (value: ChangeNicknameResponse): Buffer =>
       Buffer.from(ChangeNicknameResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): ChangeNicknameResponse => ChangeNicknameResponse.decode(value),
-  },
-  changeTelegramUsername: {
-    path: "/auth.AuthService/changeTelegramUsername",
-    requestStream: false,
-    responseStream: false,
-    requestSerialize: (value: ChangeTelegramUsernameRequest): Buffer =>
-      Buffer.from(ChangeTelegramUsernameRequest.encode(value).finish()),
-    requestDeserialize: (value: Buffer): ChangeTelegramUsernameRequest => ChangeTelegramUsernameRequest.decode(value),
-    responseSerialize: (value: ChangeTelegramUsernameResponse): Buffer =>
-      Buffer.from(ChangeTelegramUsernameResponse.encode(value).finish()),
-    responseDeserialize: (value: Buffer): ChangeTelegramUsernameResponse =>
-      ChangeTelegramUsernameResponse.decode(value),
   },
   changeAvatar: {
     path: "/auth.AuthService/changeAvatar",
@@ -5160,6 +4963,20 @@ export const AuthServiceService = {
       Buffer.from(SuggestUsernameAlternativesResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): SuggestUsernameAlternativesResponse =>
       SuggestUsernameAlternativesResponse.decode(value),
+  },
+  /** История изменений Linked Telegram Username текущего пользователя (для Settings) */
+  getMyTelegramUsernameHistory: {
+    path: "/auth.AuthService/getMyTelegramUsernameHistory",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: GetMyTelegramUsernameHistoryRequest): Buffer =>
+      Buffer.from(GetMyTelegramUsernameHistoryRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetMyTelegramUsernameHistoryRequest =>
+      GetMyTelegramUsernameHistoryRequest.decode(value),
+    responseSerialize: (value: GetMyTelegramUsernameHistoryResponse): Buffer =>
+      Buffer.from(GetMyTelegramUsernameHistoryResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): GetMyTelegramUsernameHistoryResponse =>
+      GetMyTelegramUsernameHistoryResponse.decode(value),
   },
   /** Two-Factor Authentication */
   enable2Fa: {
@@ -5270,15 +5087,17 @@ export interface AuthServiceServer extends UntypedServiceImplementation {
   changeTelegramAccount: handleUnaryCall<ChangeTelegramAccountRequest, ChangeTelegramAccountResponse>;
   terminateAllSessions: handleUnaryCall<TerminateAllSessionsRequest, TerminateAllSessionsResponse>;
   linkEmailToAccount: handleUnaryCall<LinkEmailRequest, LinkEmailResponse>;
-  syncUsername: handleUnaryCall<SyncUsernameRequest, SyncUsernameResponse>;
   /** User identity management */
-  changeUsername: handleUnaryCall<ChangeUsernameRequest, ChangeUsernameResponse>;
   changeNickname: handleUnaryCall<ChangeNicknameRequest, ChangeNicknameResponse>;
-  changeTelegramUsername: handleUnaryCall<ChangeTelegramUsernameRequest, ChangeTelegramUsernameResponse>;
   changeAvatar: handleUnaryCall<ChangeAvatarRequest, ChangeAvatarResponse>;
   getUserIdentity: handleUnaryCall<GetUserIdentityRequest, GetUserIdentityResponse>;
   getUserProfile: handleUnaryCall<GetUserProfileRequest, GetUserProfileResponse>;
   suggestUsernameAlternatives: handleUnaryCall<SuggestUsernameAlternativesRequest, SuggestUsernameAlternativesResponse>;
+  /** История изменений Linked Telegram Username текущего пользователя (для Settings) */
+  getMyTelegramUsernameHistory: handleUnaryCall<
+    GetMyTelegramUsernameHistoryRequest,
+    GetMyTelegramUsernameHistoryResponse
+  >;
   /** Two-Factor Authentication */
   enable2Fa: handleUnaryCall<Enable2FARequest, Enable2FAResponse>;
   verify2Fa: handleUnaryCall<Verify2FARequest, Verify2FAResponse>;
@@ -5522,37 +5341,7 @@ export interface AuthServiceClient extends Client {
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: LinkEmailResponse) => void,
   ): ClientUnaryCall;
-  syncUsername(
-    request: SyncUsernameRequest,
-    callback: (error: ServiceError | null, response: SyncUsernameResponse) => void,
-  ): ClientUnaryCall;
-  syncUsername(
-    request: SyncUsernameRequest,
-    metadata: Metadata,
-    callback: (error: ServiceError | null, response: SyncUsernameResponse) => void,
-  ): ClientUnaryCall;
-  syncUsername(
-    request: SyncUsernameRequest,
-    metadata: Metadata,
-    options: Partial<CallOptions>,
-    callback: (error: ServiceError | null, response: SyncUsernameResponse) => void,
-  ): ClientUnaryCall;
   /** User identity management */
-  changeUsername(
-    request: ChangeUsernameRequest,
-    callback: (error: ServiceError | null, response: ChangeUsernameResponse) => void,
-  ): ClientUnaryCall;
-  changeUsername(
-    request: ChangeUsernameRequest,
-    metadata: Metadata,
-    callback: (error: ServiceError | null, response: ChangeUsernameResponse) => void,
-  ): ClientUnaryCall;
-  changeUsername(
-    request: ChangeUsernameRequest,
-    metadata: Metadata,
-    options: Partial<CallOptions>,
-    callback: (error: ServiceError | null, response: ChangeUsernameResponse) => void,
-  ): ClientUnaryCall;
   changeNickname(
     request: ChangeNicknameRequest,
     callback: (error: ServiceError | null, response: ChangeNicknameResponse) => void,
@@ -5567,21 +5356,6 @@ export interface AuthServiceClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: ChangeNicknameResponse) => void,
-  ): ClientUnaryCall;
-  changeTelegramUsername(
-    request: ChangeTelegramUsernameRequest,
-    callback: (error: ServiceError | null, response: ChangeTelegramUsernameResponse) => void,
-  ): ClientUnaryCall;
-  changeTelegramUsername(
-    request: ChangeTelegramUsernameRequest,
-    metadata: Metadata,
-    callback: (error: ServiceError | null, response: ChangeTelegramUsernameResponse) => void,
-  ): ClientUnaryCall;
-  changeTelegramUsername(
-    request: ChangeTelegramUsernameRequest,
-    metadata: Metadata,
-    options: Partial<CallOptions>,
-    callback: (error: ServiceError | null, response: ChangeTelegramUsernameResponse) => void,
   ): ClientUnaryCall;
   changeAvatar(
     request: ChangeAvatarRequest,
@@ -5642,6 +5416,22 @@ export interface AuthServiceClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: SuggestUsernameAlternativesResponse) => void,
+  ): ClientUnaryCall;
+  /** История изменений Linked Telegram Username текущего пользователя (для Settings) */
+  getMyTelegramUsernameHistory(
+    request: GetMyTelegramUsernameHistoryRequest,
+    callback: (error: ServiceError | null, response: GetMyTelegramUsernameHistoryResponse) => void,
+  ): ClientUnaryCall;
+  getMyTelegramUsernameHistory(
+    request: GetMyTelegramUsernameHistoryRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: GetMyTelegramUsernameHistoryResponse) => void,
+  ): ClientUnaryCall;
+  getMyTelegramUsernameHistory(
+    request: GetMyTelegramUsernameHistoryRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: GetMyTelegramUsernameHistoryResponse) => void,
   ): ClientUnaryCall;
   /** Two-Factor Authentication */
   enable2Fa(

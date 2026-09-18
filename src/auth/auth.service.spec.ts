@@ -8,6 +8,7 @@ import { EnhancedJwtService } from '../security/services/enhanced-jwt.service';
 import { SessionService } from '../security/services/session.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
+import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -69,6 +70,14 @@ describe('AuthService', () => {
           useValue: {
             generateTokens: jest.fn(),
             verifyToken: jest.fn(),
+          },
+        },
+        {
+          provide: TelegramUsernameHistoryService,
+          useValue: {
+            record: jest.fn(),
+            recordIfChanged: jest.fn(),
+            listForUser: jest.fn(),
           },
         },
         {

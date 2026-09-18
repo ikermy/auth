@@ -94,6 +94,7 @@ model User {
   sessions Session[]
   securityEvents SecurityEvent[]
   telegramIdentityAudits TelegramIdentityAudit[]
+  telegramUsernameHistory TelegramUsernameHistory[]
   usernameReservations UsernameReservation[]
   recoveryRequests RecoveryRequest[]
 
@@ -150,6 +151,24 @@ model TelegramIdentityAudit {
 
   @@index([userId])
   @@map("telegram_identity_audit")
+}
+
+// История изменений Linked Telegram Username (telegramUsername).
+// Хранится бессрочно, per-user; отображается в Settings и задел под поиск по истории.
+model TelegramUsernameHistory {
+  id String @id @default(uuid())
+  userId String
+  telegramUsername String? // значение, ставшее текущим (null для removed)
+  previousUsername String? // предыдущее значение (для changed/removed)
+  eventType String // set | changed | removed | migrated
+  source String? // telegram_widget | manual | audit_migration
+  changedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, changedAt])
+  @@index([telegramUsername])
+  @@map("telegram_username_history")
 }
 
 enum ReservationState {

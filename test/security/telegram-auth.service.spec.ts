@@ -7,6 +7,7 @@ import { RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
 import { UsernameService } from '../../src/auth/services/username.service';
 import { UserIdentityService } from '../../src/auth/services/user-identity.service';
+import { TelegramUsernameHistoryService } from '../../src/auth/services/telegram-username-history.service';
 import { HttpService } from '@nestjs/axios';
 import * as crypto from 'crypto';
 
@@ -35,6 +36,9 @@ describe('TelegramAuthService', () => {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+    },
+    telegramIdentityAudit: {
+      create: jest.fn(),
     },
     $transaction: jest.fn(),
   } as any;
@@ -93,6 +97,14 @@ describe('TelegramAuthService', () => {
             post: jest.fn(),
             put: jest.fn(),
             delete: jest.fn(),
+          },
+        },
+        {
+          provide: TelegramUsernameHistoryService,
+          useValue: {
+            record: jest.fn(),
+            recordIfChanged: jest.fn(),
+            listForUser: jest.fn(),
           },
         },
       ],
@@ -265,14 +277,13 @@ describe('TelegramAuthService', () => {
       expect(result).toBe(true);
     });
 
-    it('should take over telegram account already linked to another user', async () => {
+    it('should reject telegram account already linked to another user', async () => {
       // Пользователь существует
       (prismaService.user.findUnique as jest.Mock).mockResolvedValue({
         id: 'user-id',
+        telegramId: null,
       } as any);
-      const txUpdate = jest.fn().mockResolvedValue({});
-      const txAudit = jest.fn().mockResolvedValue({});
-      // В транзакции находим, что Telegram ID занят другим — происходит передача.
+      // В транзакции находим, что Telegram ID занят другим — отказ без передачи.
       (prismaService.$transaction as jest.Mock).mockImplementation(
         async (cb: any) =>
           cb({
@@ -280,26 +291,19 @@ describe('TelegramAuthService', () => {
               findUnique: jest.fn().mockResolvedValue({
                 id: 'other-user-id',
                 telegramUsername: 'johndoe',
-                username: 'johndoe',
               }),
               findMany: jest.fn().mockResolvedValue([]),
-              update: txUpdate,
+              update: jest.fn(),
             },
             telegramIdentityAudit: {
-              create: txAudit,
+              create: jest.fn(),
             },
           }),
       );
 
-      const result = await service.linkTelegramToExistingAccount(
-        'user-id',
-        mockAuthData,
-      );
-
-      expect(result).toBe(true);
-      // Прежний владелец отозван (telegramId -> null) и прологирован в аудите.
-      expect(txUpdate).toHaveBeenCalled();
-      expect(txAudit).toHaveBeenCalled();
+      await expect(
+        service.linkTelegramToExistingAccount('user-id', mockAuthData),
+      ).rejects.toThrow(RpcException);
     });
 
     it('should reject when user does not exist', async () => {

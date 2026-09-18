@@ -58,102 +58,16 @@ export class UserIdentityService {
   }
 
   /**
-   * Изменяет User Username
+   * Username immutable: смена запрещена для любых аккаунтов.
    */
   async changeUsername(
-    userId: string,
-    newUsername: string,
+    _userId: string,
+    _newUsername: string,
   ): Promise<string> {
-    try {
-      // Валидация входных данных
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid user ID',
-        });
-      }
-
-      if (
-        !newUsername ||
-        newUsername.trim().length === 0 ||
-        newUsername.length > 50
-      ) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid username',
-        });
-      }
-
-      // Валидация формата username
-      const usernameValidation = this.validateUserUsername(newUsername);
-      if (!usernameValidation.valid) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: `Username validation failed: ${usernameValidation.errors.join(', ')}`,
-        });
-      }
-
-      // Проверяем, что пользователь существует
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found',
-        });
-      }
-
-      // Проверяем, что новый username не занят другим пользователем
-      const existingUser = await this.prismaService.user.findUnique({
-        where: { username: newUsername },
-      });
-
-      if (existingUser && existingUser.id !== userId) {
-        // Генерируем альтернативные username
-        const alternatives = await this.generateUsernameAlternatives(
-          newUsername,
-          userId,
-          5,
-        );
-
-        throw new RpcException({
-          code: status.ALREADY_EXISTS,
-          message: 'User username is already taken',
-          details: JSON.stringify({
-            hasAlternatives: alternatives.length > 0,
-            alternativeUsernames: alternatives,
-          }),
-        });
-      }
-
-      // Обновляем User username
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          username: newUsername,
-        },
-      });
-
-      this.logger.log(
-        `✅ [USER] Username changed for user ${userId}: ${user.username} -> ${newUsername}`,
-      );
-      return newUsername;
-    } catch (error) {
-      this.logger.error(
-        `Error changing User username: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to change User username',
-      });
-    }
+    throw new RpcException({
+      code: status.FAILED_PRECONDITION,
+      message: 'Username cannot be changed',
+    });
   }
 
   /**
@@ -365,84 +279,6 @@ export class UserIdentityService {
   }
 
   /**
-   * Обновляет Telegram username профиля (без @). Пустая строка удаляет.
-   */
-  async changeTelegramUsername(
-    userId: string,
-    telegramUsername: string,
-  ): Promise<string> {
-    try {
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid user ID',
-        });
-      }
-
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found',
-        });
-      }
-
-      // Аккаунт, созданный через Telegram: Telegram username привязан к Telegram и не может быть изменён.
-      if (user.origin === 'telegram') {
-        throw new RpcException({
-          code: status.PERMISSION_DENIED,
-          message: 'Telegram username is managed by Telegram and cannot be changed',
-        });
-      }
-
-      const clean = (telegramUsername || '').trim().replace(/^@/, '');
-      if (clean.length > 50) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid telegram username',
-        });
-      }
-      if (clean) {
-        const telegramRegex = /^[a-zA-Z0-9_]{3,32}$/;
-        if (!telegramRegex.test(clean)) {
-          throw new RpcException({
-            code: status.INVALID_ARGUMENT,
-            message: 'Invalid telegram username format',
-          });
-        }
-      }
-
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          telegramUsername: clean.length > 0 ? clean : null,
-        },
-      });
-
-      this.logger.log(
-        `✅ [USER] Telegram username changed for user ${userId}: ${clean}`,
-      );
-      return clean;
-    } catch (error) {
-      this.logger.error(
-        `Error changing User telegram username: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to change User telegram username',
-      });
-    }
-  }
-
-  /**
    * Валидирует User Username
    */
   private validateUserUsername(username: string): {
@@ -532,41 +368,12 @@ export class UserIdentityService {
   }
 
   /**
-   * Проверяет, может ли пользователь изменить User Username
-   * (например, если у него привязан Telegram, то изменение может быть ограничено)
+   * Username immutable: смена запрещена всегда, независимо от типа аккаунта.
    */
   async canChangeUsername(
-    userId: string,
+    _userId: string,
   ): Promise<{ canChange: boolean; reason?: string }> {
-    try {
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-        select: {
-          telegramId: true,
-          isTelegramVerified: true,
-        },
-      });
-
-      if (!user) {
-        return { canChange: false, reason: 'User not found' };
-      }
-
-      // Если у пользователя привязан Telegram, то User Username должен синхронизироваться с Telegram
-      if (user.telegramId && user.isTelegramVerified) {
-        return {
-          canChange: false,
-          reason:
-            'User username is synchronized with Telegram. Use syncUsername to update it.',
-        };
-      }
-
-      return { canChange: true };
-    } catch (error) {
-      this.logger.error(
-        `Error checking User username change permission: ${(error as Error).message}`,
-      );
-      return { canChange: false, reason: 'Internal error' };
-    }
+    return { canChange: false, reason: 'Username cannot be changed' };
   }
 
   /**

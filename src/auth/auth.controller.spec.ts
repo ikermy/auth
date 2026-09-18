@@ -15,6 +15,7 @@ import { EncryptionService } from '../security/services/encryption.service';
 import { SessionService } from '../security/services/session.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
+import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
 
 describe('AuthController', () => {
   let controller: AuthController;
@@ -132,6 +133,14 @@ describe('AuthController', () => {
             canChangeUsername: jest.fn(),
             suggestUsernameAlternatives: jest.fn(),
             generateUsernameAlternatives: jest.fn(),
+          },
+        },
+        {
+          provide: TelegramUsernameHistoryService,
+          useValue: {
+            record: jest.fn(),
+            recordIfChanged: jest.fn(),
+            listForUser: jest.fn(),
           },
         },
       ],

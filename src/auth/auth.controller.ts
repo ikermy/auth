@@ -34,20 +34,16 @@ import {
   TerminateAllSessionsResponse,
   LinkEmailRequest,
   LinkEmailResponse,
-  SyncUsernameRequest,
-  SyncUsernameResponse,
-  ChangeUsernameRequest,
-  ChangeUsernameResponse,
   ChangeNicknameRequest,
   ChangeNicknameResponse,
-  ChangeTelegramUsernameRequest,
-  ChangeTelegramUsernameResponse,
   ChangeAvatarRequest,
   ChangeAvatarResponse,
   GetUserIdentityRequest,
   GetUserIdentityResponse,
   GetUserProfileRequest,
   GetUserProfileResponse,
+  GetMyTelegramUsernameHistoryRequest,
+  GetMyTelegramUsernameHistoryResponse,
   SuggestUsernameAlternativesRequest,
   SuggestUsernameAlternativesResponse,
   Enable2FARequest,
@@ -66,6 +62,7 @@ import { AnomalyDetectionService } from '../security/services/anomaly-detection.
 import { EncryptionService } from '../security/services/encryption.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
+import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
 import { PrismaService } from '../prisma.service';
 import { RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
@@ -96,6 +93,7 @@ export class AuthController {
     private readonly encryptionService: EncryptionService,
     private readonly usernameService: UsernameService,
     private readonly userIdentityService: UserIdentityService,
+    private readonly telegramUsernameHistory: TelegramUsernameHistoryService,
     private readonly prismaService: PrismaService,
   ) {}
 
@@ -910,8 +908,7 @@ export class AuthController {
         });
       }
 
-      // 6. Обновляем User username при логине (гармонизация с Telegram)
-      await this.telegramAuthService.updateUserUsernameOnLogin(telegramId);
+      // 6. Platform username не синхронизируется с Telegram (immutable).
 
       // 7. Генерируем токены (создаёт активную сессию)
       const tokens = await this.enhancedJwtService.generateTokens(
@@ -1960,180 +1957,6 @@ export class AuthController {
     }
   }
 
-  // Sync User Username with Telegram data
-  @GrpcMethod('AuthService', 'syncUsername')
-  @Throttle({ default: { ttl: 60000, limit: 10 } }) // 10 попыток в минуту
-  async syncUsername(
-    data: SyncUsernameRequest,
-    @CurrentUser() principal: AuthPrincipal,
-  ): Promise<SyncUsernameResponse> {
-    const userId = principal.userId;
-
-    this.logger.log(`🔄 [USER] SYNC request received for user ${userId}`);
-
-    try {
-      // 1. Валидация входных данных
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid user ID',
-        });
-      }
-
-      // 2. Получаем пользователя
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found',
-        });
-      }
-
-      // 3. Проверяем, что у пользователя привязан Telegram
-      if (!user.telegramId) {
-        throw new RpcException({
-          code: status.FAILED_PRECONDITION,
-          message:
-            'Telegram account is not linked. Cannot sync User username.',
-        });
-      }
-
-      // 4. Генерируем новый User username на основе текущих Telegram данных
-      const newUserUsername =
-        this.usernameService.generateUsername(
-          user.telegramId,
-          user.telegramUsername || undefined,
-        );
-
-      // 5. Проверяем, что новый username не занят другим пользователем
-      if (newUserUsername !== user.username) {
-        const existingUser = await this.prismaService.user.findUnique({
-          where: { username: newUserUsername },
-        });
-
-        if (existingUser && existingUser.id !== userId) {
-          // Генерируем альтернативные username
-          const alternatives =
-            await this.userIdentityService.generateUsernameAlternatives(
-              newUserUsername,
-              userId,
-              5,
-            );
-
-          throw new RpcException({
-            code: status.ALREADY_EXISTS,
-            message: 'User username is already taken by another user',
-            details: JSON.stringify({
-              hasAlternatives: alternatives.length > 0,
-              alternativeUsernames: alternatives,
-            }),
-          });
-        }
-      }
-
-      // 6. Обновляем User username
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          username: newUserUsername,
-        },
-      });
-
-      this.logger.log(
-        `✅ [USER] Successfully synced User username to ${newUserUsername} for user ${userId}`,
-      );
-
-      return {
-        success: true,
-        message: 'User username synchronized successfully',
-        username: newUserUsername,
-      };
-    } catch (error) {
-      this.logger.error(
-        `User username sync error: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to sync User username',
-      });
-    }
-  }
-
-  // User identity management methods
-  @GrpcMethod('AuthService', 'changeUsername')
-  @Throttle({ default: { ttl: 300000, limit: 5 } }) // 5 попыток в 5 минут
-  async changeUsername(
-    @Payload() data: ChangeUsernameRequest,
-    @CurrentUser() principal: AuthPrincipal,
-  ): Promise<ChangeUsernameResponse> {
-    const { newUsername } = data;
-    const userId = principal.userId;
-
-    this.logger.log(`🔄 [USER] Username change request for user ${userId}`);
-
-    try {
-      // 1. Валидация входных данных
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid user ID',
-        });
-      }
-
-      if (
-        !newUsername ||
-        newUsername.trim().length === 0 ||
-        newUsername.length > 50
-      ) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid username',
-        });
-      }
-
-      // 2. Изменяем User username
-      const result = await this.authService.changeUsername({
-        userId,
-        newUsername,
-      });
-
-      // 3. Логируем успешное изменение
-      this.securityLogger.logJwtEvent(
-        'USER_USERNAME_CHANGED',
-        `User ${userId} changed User username to ${newUsername}`,
-      );
-
-      return result;
-    } catch (error) {
-      this.securityLogger.logSecurityError(
-        'USER_USERNAME_CHANGE_FAILED',
-        (error as Error).message,
-      );
-
-      // Безопасная обработка ошибок
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      this.logger.error(
-        `User username change error: ${(error as Error).message}`,
-      );
-
-      throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to change User username',
-      });
-    }
-  }
-
   @GrpcMethod('AuthService', 'changeNickname')
   @Throttle({ default: { ttl: 300000, limit: 10 } }) // 10 попыток в 5 минут
   async changeNickname(
@@ -2200,39 +2023,42 @@ export class AuthController {
     }
   }
 
-  @GrpcMethod('AuthService', 'changeTelegramUsername')
-  @Throttle({ default: { ttl: 300000, limit: 10 } })
-  async changeTelegramUsername(
-    @Payload() data: ChangeTelegramUsernameRequest,
+  // История изменений Linked Telegram Username текущего пользователя (для Settings).
+  @GrpcMethod('AuthService', 'getMyTelegramUsernameHistory')
+  async getMyTelegramUsernameHistory(
+    @Payload() data: GetMyTelegramUsernameHistoryRequest,
     @CurrentUser() principal: AuthPrincipal,
-  ): Promise<ChangeTelegramUsernameResponse> {
-    const telegramUsername = data?.telegramUsername || '';
-    const userId = principal?.userId || data?.userId || '';
-
-    this.logger.log(
-      `🔄 [USER] Telegram username change request for user ${userId}`,
-    );
-
-    try {
-      const result = await this.authService.changeTelegramUsername({
-        userId,
-        telegramUsername,
-      });
-      return result;
-    } catch (error) {
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      this.logger.error(
-        `User telegram username change error: ${(error as Error).message}`,
-      );
-
+  ): Promise<GetMyTelegramUsernameHistoryResponse> {
+    const userId = principal?.userId;
+    if (!userId) {
       throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to change User telegram username',
+        code: status.UNAUTHENTICATED,
+        message: 'Unauthorized',
       });
     }
+
+    const page = Number(data?.page) > 0 ? Number(data.page) : 1;
+    const limit = Number(data?.limit) > 0 ? Number(data.limit) : 20;
+
+    const result = await this.telegramUsernameHistory.listForUser(
+      userId,
+      page,
+      limit,
+    );
+
+    return {
+      entries: result.entries.map((entry) => ({
+        id: entry.id,
+        telegramUsername: entry.telegramUsername || '',
+        previousTelegramUsername: entry.previousUsername || '',
+        eventType: entry.eventType,
+        source: entry.source || '',
+        changedAt: entry.changedAt.toISOString(),
+      })),
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+    };
   }
 
   @GrpcMethod('AuthService', 'changeAvatar')

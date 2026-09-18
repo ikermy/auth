@@ -23,14 +23,8 @@ import {
   TerminateAllSessionsResponse,
   LinkEmailRequest,
   LinkEmailResponse,
-  SyncUsernameRequest,
-  SyncUsernameResponse,
-  ChangeUsernameRequest,
-  ChangeUsernameResponse,
   ChangeNicknameRequest,
   ChangeNicknameResponse,
-  ChangeTelegramUsernameRequest,
-  ChangeTelegramUsernameResponse,
   ChangeAvatarRequest,
   ChangeAvatarResponse,
   GetUserIdentityRequest,
@@ -51,6 +45,7 @@ import { EnhancedJwtService } from '../security/services/enhanced-jwt.service';
 import { SessionService } from '../security/services/session.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
+import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
 import * as crypto from 'crypto';
 
 interface GrpcError {
@@ -69,6 +64,7 @@ export class AuthService {
     private readonly encryptionService: EncryptionService,
     private readonly usernameService: UsernameService,
     private readonly userIdentityService: UserIdentityService,
+    private readonly telegramUsernameHistory: TelegramUsernameHistoryService,
     private readonly enhancedJwtService: EnhancedJwtService,
     private readonly sessionService: SessionService,
   ) {}
@@ -143,21 +139,47 @@ export class AuthService {
         };
         throw new RpcException(error);
       }
-      const resolvedUsername = await this.resolveUniqueUserUsername(
-        normalizedUsername,
-        '', // новый пользователь — userId ещё нет
-      );
+
+      // Username immutable: при занятости НЕ делаем фолбэк (username_/username123),
+      // а просим пользователя ввести другое имя.
+      const usernameTaken = await this.prismaService.user.findUnique({
+        where: { username: normalizedUsername },
+        select: { id: true },
+      });
+      if (usernameTaken) {
+        const error: GrpcError = {
+          code: status.ALREADY_EXISTS,
+          message: 'Username is already taken',
+        };
+        throw new RpcException(error);
+      }
 
       const salt = await bcrypt.genSalt(BCRYPT_COST);
       const hashedPassword = await bcrypt.hash(password, salt);
 
-      const newUser = await this.prismaService.user.create({
-        data: {
-          email,
-          password: hashedPassword,
-          username: resolvedUsername,
-        },
-      });
+      let newUser;
+      try {
+        newUser = await this.prismaService.user.create({
+          data: {
+            email,
+            password: hashedPassword,
+            username: normalizedUsername,
+          },
+        });
+      } catch (error) {
+        // Гонка: имя заняли между проверкой и create.
+        if (
+          error &&
+          typeof error === 'object' &&
+          (error as { code?: string }).code === 'P2002'
+        ) {
+          throw new RpcException({
+            code: status.ALREADY_EXISTS,
+            message: 'Username is already taken',
+          });
+        }
+        throw error;
+      }
 
       const tokens = await this.enhancedJwtService.generateTokens(
         newUser.id,
@@ -969,147 +991,114 @@ export class AuthService {
       }
 
       // ИСТОЧНИК ИСТИНЫ — Telegram: подпись виджета уже проверена в контроллере.
-      // Валидный запрос на присвоение telegram-аккаунта всегда доверяем.
       // Нормализуем telegram-username из виджета (у telegram-аккаунтов он может отсутствовать).
-      const cleanTelegramUsername = (username || '').trim().replace(/^@/, '');
+      const cleanTelegramUsername =
+        (username || '').trim().replace(/^@/, '') || null;
 
-      // Кто сейчас владеет этим Telegram ID (кроме запрашивающего пользователя).
-      // Если аккаунт занят другим пользователем — выполняем полную передачу.
-      const previousHolder =
-        user.telegramId === telegramId
-          ? null
-          : await this.prismaService.user.findUnique({
-              where: { telegramId },
-            });
+      // telegramId нельзя отобрать/заменить, а занятый чужим аккаунтом — нельзя привязать.
+      if (user.telegramId && user.telegramId !== telegramId) {
+        throw new RpcException({
+          code: status.FAILED_PRECONDITION,
+          message: 'Telegram ID cannot be changed once linked',
+        });
+      }
 
-      // Желаемый platform username на основе telegram-данных.
-      const baseUserUsername = this.usernameService.generateUsername(
-        telegramId,
-        cleanTelegramUsername || undefined,
-      );
-
-      // Аудит изменения identity у запрашивающего (снимок до).
+      const previousTelegramUsername = user.telegramUsername;
       const identityChanged =
         user.telegramId !== telegramId ||
-        (user.telegramUsername || '') !== cleanTelegramUsername ||
+        (user.telegramUsername || '') !== (cleanTelegramUsername || '') ||
         (user.telegramFirstName || '') !== (firstName || '') ||
         (user.telegramLastName || '') !== (lastName || '') ||
         (user.telegramPhotoUrl || '') !== (photoUrl || '');
 
-      if (identityChanged) {
-        await this.prismaService.telegramIdentityAudit.create({
-          data: {
-            userId,
-            eventType:
-              previousHolder && user.telegramId !== telegramId
-                ? 'telegram_account_transferred'
-                : user.telegramId !== telegramId
-                  ? 'telegram_changed'
-                  : 'telegram_identity_updated',
-            previousData: {
-              telegramId: user.telegramId,
-              telegramUsername: user.telegramUsername,
-              telegramFirstName: user.telegramFirstName,
-              telegramLastName: user.telegramLastName,
-              telegramPhotoUrl: user.telegramPhotoUrl,
-              isTelegramVerified: user.isTelegramVerified,
-              changedAt: new Date().toISOString(),
-            },
-          },
+      await this.prismaService.$transaction(async (tx) => {
+        // Занятый telegramId не передаём: отказ при любых условиях.
+        const previousHolder = await tx.user.findUnique({
+          where: { telegramId },
         });
-      }
-
-      // Занятый Telegram передаём новому владельцу: прежнего telegram-origin
-      // владельца оставляем аккаунтом, но отзываем у него всю telegram-идентичность
-      // и освобождаем его platform username, если он совпадает с желаемым.
-      if (previousHolder) {
-        const snapshot = {
-          telegramId: previousHolder.telegramId,
-          telegramUsername: previousHolder.telegramUsername,
-          telegramFirstName: previousHolder.telegramFirstName,
-          telegramLastName: previousHolder.telegramLastName,
-          telegramPhotoUrl: previousHolder.telegramPhotoUrl,
-          isTelegramVerified: previousHolder.isTelegramVerified,
-          username: previousHolder.username,
-          changedAt: new Date().toISOString(),
-        };
-
-        await this.prismaService.telegramIdentityAudit.create({
-          data: {
-            userId: previousHolder.id,
-            eventType: 'telegram_account_revoked',
-            previousData: snapshot,
-          },
-        });
-
-        const revokeData: any = {
-          telegramId: null,
-          telegramUsername: null,
-          telegramFirstName: null,
-          telegramLastName: null,
-          telegramPhotoUrl: null,
-          isTelegramVerified: false,
-        };
-        // Освобождаем platform username прежнего владельца, чтобы новый владелец
-        // мог занять желаемое имя (резерв не создаём — имя переходит новому владельцу).
-        if (previousHolder.username === baseUserUsername) {
-          revokeData.username = null;
+        if (previousHolder && previousHolder.id !== userId) {
+          throw new RpcException({
+            code: status.ALREADY_EXISTS,
+            message: 'Telegram ID is already linked to another account',
+          });
         }
 
-        await this.prismaService.user.update({
-          where: { id: previousHolder.id },
-          data: revokeData,
-        });
-
-        this.logger.log(
-          `↩️ [TELEGRAM] Revoked occupied telegram ${telegramId} from user ${previousHolder.id} (transferred to ${userId})`,
-        );
-      }
-
-      // Снимаем дубли telegram-ника с прочих аккаунтов (текстовый ник), чтобы у
-      // telegram-ника остался один канонический владелец.
-      const usernameDuplicates = await this.prismaService.user.findMany({
-        where: {
-          telegramUsername: cleanTelegramUsername,
-          id: { not: userId },
-        },
-      });
-      for (const dup of usernameDuplicates) {
-        await this.prismaService.telegramIdentityAudit.create({
-          data: {
-            userId: dup.id,
-            eventType: 'telegram_username_removed',
-            previousData: {
-              telegramUsername: dup.telegramUsername,
-              changedAt: new Date().toISOString(),
+        if (identityChanged) {
+          await tx.telegramIdentityAudit.create({
+            data: {
+              userId,
+              eventType: user.telegramId
+                ? 'telegram_identity_updated'
+                : 'telegram_account_linked',
+              previousData: {
+                telegramId: user.telegramId,
+                telegramUsername: user.telegramUsername,
+                telegramFirstName: user.telegramFirstName,
+                telegramLastName: user.telegramLastName,
+                telegramPhotoUrl: user.telegramPhotoUrl,
+                isTelegramVerified: user.isTelegramVerified,
+                changedAt: new Date().toISOString(),
+              },
             },
+          });
+        }
+
+        // Снимаем дубли telegram-ника с прочих аккаунтов (+ история), чтобы у ника
+        // остался один канонический владелец.
+        if (cleanTelegramUsername) {
+          const usernameDuplicates = await tx.user.findMany({
+            where: {
+              telegramUsername: cleanTelegramUsername,
+              id: { not: userId },
+            },
+          });
+          for (const dup of usernameDuplicates) {
+            await tx.telegramIdentityAudit.create({
+              data: {
+                userId: dup.id,
+                eventType: 'telegram_username_removed',
+                previousData: {
+                  telegramUsername: dup.telegramUsername,
+                  changedAt: new Date().toISOString(),
+                },
+              },
+            });
+            await tx.user.update({
+              where: { id: dup.id },
+              data: { telegramUsername: null },
+            });
+            await this.telegramUsernameHistory.record(
+              dup.id,
+              null,
+              dup.telegramUsername,
+              'removed',
+              'telegram_widget',
+              tx,
+            );
+          }
+        }
+
+        // История изменения telegram-ника текущего пользователя.
+        await this.telegramUsernameHistory.recordIfChanged(
+          userId,
+          previousTelegramUsername,
+          cleanTelegramUsername,
+          'telegram_widget',
+          tx,
+        );
+
+        // Привязываем/обновляем telegram-идентичность. Platform username НЕ трогаем.
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            telegramId: telegramId,
+            telegramUsername: cleanTelegramUsername,
+            telegramFirstName: firstName,
+            telegramLastName: lastName || null,
+            telegramPhotoUrl: photoUrl || null,
+            isTelegramVerified: true,
           },
         });
-        await this.prismaService.user.update({
-          where: { id: dup.id },
-          data: { telegramUsername: null },
-        });
-      }
-
-      // Резолвим уникальный User username (стабильный fallback при конфликте).
-      const resolvedUsername = await this.resolveUniqueUserUsername(
-        baseUserUsername,
-        userId,
-      );
-
-      // Привязываем полную telegram-идентичность запрашивающему и синхронизируем
-      // platform username.
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          telegramId: telegramId,
-          telegramUsername: cleanTelegramUsername || null,
-          telegramFirstName: firstName,
-          telegramLastName: lastName || null,
-          telegramPhotoUrl: photoUrl || null,
-          isTelegramVerified: true,
-          username: resolvedUsername, // Автоматически синхронизируем User username
-        },
       });
 
       this.logger.log(
@@ -1317,148 +1306,6 @@ export class AuthService {
     }
   }
 
-  async syncUsername(
-    data: SyncUsernameRequest,
-  ): Promise<SyncUsernameResponse> {
-    const { userId } = data;
-
-    this.logger.log(`🔄 [USER] SYNC request received for user ${userId}`);
-
-    try {
-      // 1. Валидация входных данных
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid user ID',
-        });
-      }
-
-      // 2. Получаем пользователя
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found',
-        });
-      }
-
-      // 3. Проверяем, что у пользователя привязан Telegram
-      if (!user.telegramId) {
-        throw new RpcException({
-          code: status.FAILED_PRECONDITION,
-          message:
-            'Telegram account is not linked. Cannot sync User username.',
-        });
-      }
-
-      // 4. Генерируем новый User username на основе текущих Telegram данных
-      const baseUserUsername =
-        this.usernameService.generateUsername(
-          user.telegramId,
-          user.telegramUsername || undefined,
-        );
-
-      // 5. Резолвим уникальный User username (стабильный fallback при конфликте)
-      const newUserUsername = await this.resolveUniqueUserUsername(
-        baseUserUsername,
-        userId,
-      );
-
-      // 5.1 Резервируем освободившийся username на grace period (§2.3)
-      if (
-        user.username &&
-        user.username !== newUserUsername
-      ) {
-        await this.usernameService.reserveUsername(
-          userId,
-          user.username,
-        );
-      }
-
-      // 6. Обновляем User username
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          username: newUserUsername,
-        },
-      });
-
-      this.logger.log(
-        `✅ [USER] Successfully synced User username to ${newUserUsername} for user ${userId}`,
-      );
-
-      return {
-        success: true,
-        message: 'User username synchronized successfully',
-        username: newUserUsername,
-      };
-    } catch (error) {
-      this.logger.error(
-        `User username sync error: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to sync User username',
-      });
-    }
-  }
-
-  // User identity management methods
-  async changeUsername(
-    data: ChangeUsernameRequest,
-  ): Promise<ChangeUsernameResponse> {
-    try {
-      const { userId, newUsername } = data;
-
-      this.logger.log(`🔄 [USER] Username change request for user ${userId}`);
-
-      // Проверяем, может ли пользователь изменить User Username
-      const canChange =
-        await this.userIdentityService.canChangeUsername(userId);
-      if (!canChange.canChange) {
-        throw new RpcException({
-          code: status.FAILED_PRECONDITION,
-          message: canChange.reason || 'Cannot change User username',
-        });
-      }
-
-      const updatedUsername =
-        await this.userIdentityService.changeUsername(
-          userId,
-          newUsername,
-        );
-
-      return {
-        success: true,
-        message: 'User username changed successfully',
-        username: updatedUsername,
-        hasAlternatives: false,
-        alternativeUsernames: [],
-      };
-    } catch (error) {
-      this.logger.error(
-        `User username change error: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to change User username',
-      });
-    }
-  }
-
   async changeNickname(
     data: ChangeNicknameRequest,
   ): Promise<ChangeNicknameResponse> {
@@ -1490,43 +1337,6 @@ export class AuthService {
       throw new RpcException({
         code: status.INTERNAL,
         message: 'Failed to change User nickname',
-      });
-    }
-  }
-
-  async changeTelegramUsername(
-    data: ChangeTelegramUsernameRequest,
-  ): Promise<ChangeTelegramUsernameResponse> {
-    try {
-      const { userId, telegramUsername } = data;
-
-      this.logger.log(
-        `🔄 [USER] Telegram username change request for user ${userId}`,
-      );
-
-      const updated =
-        await this.userIdentityService.changeTelegramUsername(
-          userId,
-          telegramUsername,
-        );
-
-      return {
-        success: true,
-        message: 'User telegram username changed successfully',
-        telegramUsername: updated,
-      };
-    } catch (error) {
-      this.logger.error(
-        `User telegram username change error: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to change User telegram username',
       });
     }
   }
@@ -1671,57 +1481,6 @@ export class AuthService {
         message: 'Failed to suggest username alternatives',
       });
     }
-  }
-
-  /**
-   * Возвращает свободный User username для заданного User ID:
-   * - точное имя, если свободно или уже принадлежит этому пользователю;
-   * - иначе стабильный детерминированный fallback `<username>_<короткий суффикс User ID>`.
-   * Конфликт имени не ломает login/linking (TG-03). Имя, активное в grace period
-   * за другим User ID, считается недоступным (§2.3).
-   */
-  private async resolveUniqueUserUsername(
-    baseUsername: string,
-    userId: string,
-  ): Promise<string> {
-    const existing = await this.prismaService.user.findUnique({
-      where: { username: baseUsername },
-    });
-    if (!existing || existing.id === userId) {
-      const reserved = await this.usernameService.isUsernameReservedByOther(
-        baseUsername,
-        userId,
-      );
-      if (reserved) {
-        const idDigits = userId.replace(/-/g, '');
-        return this.usernameService.generateAlternativeUsername(
-          baseUsername,
-          idDigits.slice(0, 4).toLowerCase(),
-        );
-      }
-      return baseUsername;
-    }
-
-    const idDigits = userId.replace(/-/g, '');
-    const suffix = idDigits.slice(0, 4).toLowerCase();
-    const fallback = this.usernameService.generateAlternativeUsername(
-      baseUsername,
-      suffix,
-    );
-
-    const existingFallback = await this.prismaService.user.findUnique({
-      where: { username: fallback },
-    });
-    if (!existingFallback || existingFallback.id === userId) {
-      return fallback;
-    }
-
-    const fallback2 =
-      this.usernameService.generateAlternativeUsername(
-        baseUsername,
-        idDigits.slice(0, 8).toLowerCase(),
-      );
-    return fallback2;
   }
 
   /**
