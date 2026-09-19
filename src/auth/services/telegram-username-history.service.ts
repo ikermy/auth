@@ -2,8 +2,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { Prisma } from '../../../generated/prisma';
 
-export type TelegramUsernameEventType = 'set' | 'changed' | 'removed' | 'migrated';
-export type TelegramUsernameSource = 'telegram_widget' | 'manual' | 'audit_migration';
+export type TelegramUsernameEventType =
+  | 'set'
+  | 'changed'
+  | 'removed'
+  | 'migrated';
+export type TelegramUsernameSource =
+  | 'telegram_widget'
+  | 'manual'
+  | 'audit_migration';
 
 export interface TelegramUsernameHistoryItem {
   id: string;

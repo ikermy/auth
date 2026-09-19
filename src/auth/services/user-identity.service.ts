@@ -19,51 +19,39 @@ export class UserIdentityService {
    * Получает User идентификаторы пользователя
    */
   async getUserIdentity(userId: string): Promise<UserIdentity> {
-    try {
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-        select: {
-          id: true,
-          username: true,
-          nickname: true,
-        },
-      });
+    const user = await this.withRpcError(
+      () =>
+        this.prismaService.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            username: true,
+            nickname: true,
+          },
+        }),
+      'Failed to get User identity',
+    );
 
-      if (!user) {
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found',
-        });
-      }
-
-      return {
-        userId: user.id,
-        username: user.username || undefined,
-        nickname: user.nickname || undefined,
-      };
-    } catch (error) {
-      this.logger.error(
-        `Error getting User identity: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
+    if (!user) {
       throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to get User identity',
+        code: status.NOT_FOUND,
+        message: 'User not found',
       });
     }
+
+    return {
+      userId: user.id,
+      username: user.username || undefined,
+      nickname: user.nickname || undefined,
+    };
   }
 
   /**
    * Username immutable: смена запрещена для любых аккаунтов.
    */
-  async changeUsername(
-    _userId: string,
-    _newUsername: string,
-  ): Promise<string> {
+  changeUsername(_userId: string, _newUsername: string): Promise<string> {
+    void _userId;
+    void _newUsername;
     throw new RpcException({
       code: status.FAILED_PRECONDITION,
       message: 'Username cannot be changed',
@@ -132,150 +120,126 @@ export class UserIdentityService {
   /**
    * Изменяет User NickName
    */
-  async changeNickname(
-    userId: string,
-    newNickName: string,
-  ): Promise<string> {
-    try {
-      // Валидация входных данных
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid user ID',
-        });
-      }
-
-      if (
-        !newNickName ||
-        newNickName.trim().length === 0 ||
-        newNickName.length > 100
-      ) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid nickname',
-        });
-      }
-
-      // Валидация формата nickname
-      const nicknameValidation = this.validateUserNickName(newNickName);
-      if (!nicknameValidation.valid) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: `Nickname validation failed: ${nicknameValidation.errors.join(', ')}`,
-        });
-      }
-
-      // Проверяем, что пользователь существует
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found',
-        });
-      }
-
-      // Nickname — отдельное отображаемое имя, изменяемое для любого типа аккаунта
-      // (в т.ч. telegram-origin): Telegram синхронизирует telegram*/username,
-      // но не перезаписывает nickname, поэтому редактирование безопасно.
-
-      // Обновляем User nickname (nickname не уникален, поэтому проверка на существование не нужна)
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          nickname: newNickName,
-        },
-      });
-
-      this.logger.log(
-        `✅ [USER] NickName changed for user ${userId}: ${user.nickname} -> ${newNickName}`,
-      );
-      return newNickName;
-    } catch (error) {
-      this.logger.error(
-        `Error changing User nickname: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
+  async changeNickname(userId: string, newNickName: string): Promise<string> {
+    // Валидация входных данных
+    if (!userId || userId.trim().length === 0 || userId.length > 100) {
       throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to change User nickname',
+        code: status.INVALID_ARGUMENT,
+        message: 'Invalid user ID',
       });
     }
+
+    if (
+      !newNickName ||
+      newNickName.trim().length === 0 ||
+      newNickName.length > 100
+    ) {
+      throw new RpcException({
+        code: status.INVALID_ARGUMENT,
+        message: 'Invalid nickname',
+      });
+    }
+
+    // Валидация формата nickname
+    const nicknameValidation = this.validateUserNickName(newNickName);
+    if (!nicknameValidation.valid) {
+      throw new RpcException({
+        code: status.INVALID_ARGUMENT,
+        message: `Nickname validation failed: ${nicknameValidation.errors.join(', ')}`,
+      });
+    }
+
+    // Проверяем, что пользователь существует
+    const user = await this.withRpcError(
+      () => this.prismaService.user.findUnique({ where: { id: userId } }),
+      'Failed to change User nickname',
+    );
+
+    if (!user) {
+      throw new RpcException({
+        code: status.NOT_FOUND,
+        message: 'User not found',
+      });
+    }
+
+    // Nickname — отдельное отображаемое имя, изменяемое для любого типа аккаунта
+    // (в т.ч. telegram-origin): Telegram синхронизирует telegram*/username,
+    // но не перезаписывает nickname, поэтому редактирование безопасно.
+
+    // Обновляем User nickname (nickname не уникален, поэтому проверка на существование не нужна)
+    await this.withRpcError(
+      () =>
+        this.prismaService.user.update({
+          where: { id: userId },
+          data: {
+            nickname: newNickName,
+          },
+        }),
+      'Failed to change User nickname',
+    );
+
+    this.logger.log(
+      `✅ [USER] NickName changed for user ${userId}: ${user.nickname} -> ${newNickName}`,
+    );
+    return newNickName;
   }
 
   /**
    * Обновляет фотографию профиля (base64 data URL). Пустая строка удаляет фото.
    */
   async changeAvatar(userId: string, photoBase64: string): Promise<string> {
-    try {
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid user ID',
-        });
-      }
-
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found',
-        });
-      }
-
-      // Валидация формата base64 data URL (если передано фото)
-      if (photoBase64 && photoBase64.trim().length > 0) {
-        const dataUrlPattern =
-          /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
-        if (!dataUrlPattern.test(photoBase64)) {
-          throw new RpcException({
-            code: status.INVALID_ARGUMENT,
-            message: 'Invalid photo format (expected base64 data URL)',
-          });
-        }
-        // Ограничение размера ~1MB base64 (≈750KB бинарных)
-        if (photoBase64.length > 1_500_000) {
-          throw new RpcException({
-            code: status.INVALID_ARGUMENT,
-            message: 'Photo is too large (max ~1MB base64)',
-          });
-        }
-      }
-
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: {
-          photoBase64: photoBase64 && photoBase64.trim().length > 0 ? photoBase64 : null,
-        },
-      });
-
-      this.logger.log(
-        `✅ [USER] Avatar changed for user ${userId}`,
-      );
-      return photoBase64 || '';
-    } catch (error) {
-      this.logger.error(
-        `Error changing User avatar: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
+    if (!userId || userId.trim().length === 0 || userId.length > 100) {
       throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to change User avatar',
+        code: status.INVALID_ARGUMENT,
+        message: 'Invalid user ID',
       });
     }
+
+    const user = await this.withRpcError(
+      () => this.prismaService.user.findUnique({ where: { id: userId } }),
+      'Failed to change User avatar',
+    );
+
+    if (!user) {
+      throw new RpcException({
+        code: status.NOT_FOUND,
+        message: 'User not found',
+      });
+    }
+
+    // Валидация формата base64 data URL (если передано фото)
+    if (photoBase64 && photoBase64.trim().length > 0) {
+      const dataUrlPattern =
+        /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+      if (!dataUrlPattern.test(photoBase64)) {
+        throw new RpcException({
+          code: status.INVALID_ARGUMENT,
+          message: 'Invalid photo format (expected base64 data URL)',
+        });
+      }
+      // Ограничение размера ~1MB base64 (≈750KB бинарных)
+      if (photoBase64.length > 1_500_000) {
+        throw new RpcException({
+          code: status.INVALID_ARGUMENT,
+          message: 'Photo is too large (max ~1MB base64)',
+        });
+      }
+    }
+
+    await this.withRpcError(
+      () =>
+        this.prismaService.user.update({
+          where: { id: userId },
+          data: {
+            photoBase64:
+              photoBase64 && photoBase64.trim().length > 0 ? photoBase64 : null,
+          },
+        }),
+      'Failed to change User avatar',
+    );
+
+    this.logger.log(`✅ [USER] Avatar changed for user ${userId}`);
+    return photoBase64 || '';
   }
 
   /**
@@ -370,10 +334,14 @@ export class UserIdentityService {
   /**
    * Username immutable: смена запрещена всегда, независимо от типа аккаунта.
    */
-  async canChangeUsername(
+  canChangeUsername(
     _userId: string,
   ): Promise<{ canChange: boolean; reason?: string }> {
-    return { canChange: false, reason: 'Username cannot be changed' };
+    void _userId;
+    return Promise.resolve({
+      canChange: false,
+      reason: 'Username cannot be changed',
+    });
   }
 
   /**
@@ -484,6 +452,29 @@ export class UserIdentityService {
   }
 
   /**
+   * Выполняет операцию, преобразуя непредвиденные ошибки в RpcException.
+   */
+  private async withRpcError<T>(
+    operation: () => Promise<T>,
+    message: string,
+  ): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      this.logger.error(`${message}: ${(error as Error).message}`);
+
+      if (error instanceof RpcException) {
+        throw error;
+      }
+
+      throw new RpcException({
+        code: status.INTERNAL,
+        message,
+      });
+    }
+  }
+
+  /**
    * Проверяет, доступен ли username
    */
   private async isUsernameAvailable(username: string): Promise<boolean> {
@@ -508,78 +499,68 @@ export class UserIdentityService {
     desiredUsername: string,
     maxAlternatives: number = 5,
   ): Promise<string[]> {
-    try {
-      // Валидация входных данных
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid user ID',
-        });
-      }
-
-      if (
-        !desiredUsername ||
-        desiredUsername.trim().length === 0 ||
-        desiredUsername.length > 50
-      ) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid desired username',
-        });
-      }
-
-      if (maxAlternatives < 1 || maxAlternatives > 10) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Max alternatives must be between 1 and 10',
-        });
-      }
-
-      // Проверяем, что пользователь существует
-      const user = await this.prismaService.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found',
-        });
-      }
-
-      // Валидируем желаемый username
-      const usernameValidation = this.validateUserUsername(desiredUsername);
-      if (!usernameValidation.valid) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: `Desired username validation failed: ${usernameValidation.errors.join(', ')}`,
-        });
-      }
-
-      // Генерируем альтернативы
-      const alternatives = await this.generateUsernameAlternatives(
-        desiredUsername,
-        userId,
-        maxAlternatives,
-      );
-
-      this.logger.log(
-        `✅ [USER] Generated ${alternatives.length} alternatives for username: ${desiredUsername}`,
-      );
-      return alternatives;
-    } catch (error) {
-      this.logger.error(
-        `Error suggesting username alternatives: ${(error as Error).message}`,
-      );
-
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
+    // Валидация входных данных
+    if (!userId || userId.trim().length === 0 || userId.length > 100) {
       throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Failed to suggest username alternatives',
+        code: status.INVALID_ARGUMENT,
+        message: 'Invalid user ID',
       });
     }
+
+    if (
+      !desiredUsername ||
+      desiredUsername.trim().length === 0 ||
+      desiredUsername.length > 50
+    ) {
+      throw new RpcException({
+        code: status.INVALID_ARGUMENT,
+        message: 'Invalid desired username',
+      });
+    }
+
+    if (maxAlternatives < 1 || maxAlternatives > 10) {
+      throw new RpcException({
+        code: status.INVALID_ARGUMENT,
+        message: 'Max alternatives must be between 1 and 10',
+      });
+    }
+
+    // Проверяем, что пользователь существует
+    const user = await this.withRpcError(
+      () => this.prismaService.user.findUnique({ where: { id: userId } }),
+      'Failed to suggest username alternatives',
+    );
+
+    if (!user) {
+      throw new RpcException({
+        code: status.NOT_FOUND,
+        message: 'User not found',
+      });
+    }
+
+    // Валидируем желаемый username
+    const usernameValidation = this.validateUserUsername(desiredUsername);
+    if (!usernameValidation.valid) {
+      throw new RpcException({
+        code: status.INVALID_ARGUMENT,
+        message: `Desired username validation failed: ${usernameValidation.errors.join(', ')}`,
+      });
+    }
+
+    // Генерируем альтернативы
+    const alternatives = await this.withRpcError(
+      () =>
+        this.generateUsernameAlternatives(
+          desiredUsername,
+          userId,
+          maxAlternatives,
+        ),
+      'Failed to suggest username alternatives',
+    );
+
+    this.logger.log(
+      `✅ [USER] Generated ${alternatives.length} alternatives for username: ${desiredUsername}`,
+    );
+    return alternatives;
   }
 }
