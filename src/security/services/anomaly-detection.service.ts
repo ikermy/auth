@@ -210,15 +210,7 @@ export class AnomalyDetectionService {
 
     try {
       // Получаем историю IP адресов пользователя
-      const userIPs = await this.prismaService.loginAttempt.findMany({
-        where: { userId },
-        select: { ipAddress: true },
-        distinct: ['ipAddress'],
-        orderBy: { timestamp: 'desc' },
-        take: 10,
-      });
-
-      const knownIPs = userIPs.map((attempt) => attempt.ipAddress);
+      const knownIPs = await this.fetchKnownValues(userId, 'ipAddress', 10);
 
       // Новый IP адрес
       if (!knownIPs.includes(ipAddress)) {
@@ -262,15 +254,7 @@ export class AnomalyDetectionService {
 
     try {
       // Получаем историю User-Agent пользователя
-      const userUAs = await this.prismaService.loginAttempt.findMany({
-        where: { userId },
-        select: { userAgent: true },
-        distinct: ['userAgent'],
-        orderBy: { timestamp: 'desc' },
-        take: 5,
-      });
-
-      const knownUAs = userUAs.map((attempt) => attempt.userAgent);
+      const knownUAs = await this.fetchKnownValues(userId, 'userAgent', 5);
 
       // Новый User-Agent
       if (!knownUAs.includes(userAgent)) {
@@ -301,6 +285,25 @@ export class AnomalyDetectionService {
     }
 
     return { score, factors };
+  }
+
+  // Возвращает последние уникальные значения указанного поля из истории loginAttempt.
+  private async fetchKnownValues(
+    userId: string,
+    field: 'ipAddress' | 'userAgent',
+    take: number,
+  ): Promise<string[]> {
+    const rows = await this.prismaService.loginAttempt.findMany({
+      where: { userId },
+      select: { ipAddress: true, userAgent: true },
+      distinct: [field],
+      orderBy: { timestamp: 'desc' },
+      take,
+    });
+
+    return rows
+      .map((row) => row[field])
+      .filter((value): value is string => value !== null);
   }
 
   // Анализ временных паттернов
@@ -443,22 +446,26 @@ export class AnomalyDetectionService {
 
   // Проверка IP адреса в CIDR диапазоне
   private isIpInRange(ip: string, cidr: string): boolean {
+    const [network, bitsStr] = cidr.split('/');
+    const bits = parseInt(bitsStr, 10);
+
+    // Проверка на валидность bits
+    if (isNaN(bits) || bits < 0 || bits > 32) {
+      this.securityLogger.logSecurityError(
+        'IP_RANGE_CHECK_ERROR',
+        `Invalid CIDR bits in ${cidr}`,
+      );
+      return false;
+    }
+
     try {
-      const [network, bitsStr] = cidr.split('/');
-      const bits = parseInt(bitsStr, 10);
-
-      // Проверка на валидность bits
-      if (isNaN(bits) || bits < 0 || bits > 32) {
-        throw new Error('Invalid CIDR bits');
-      }
-
       const mask = ~((1 << (32 - bits)) - 1);
 
       const ipNum = this.ipToNumber(ip);
       const networkNum = this.ipToNumber(network);
 
       return (ipNum & mask) === (networkNum & mask);
-    } catch (error) {
+    } catch {
       this.securityLogger.logSecurityError(
         'IP_RANGE_CHECK_ERROR',
         `Failed to check IP range: ${ip} in ${cidr}`,
