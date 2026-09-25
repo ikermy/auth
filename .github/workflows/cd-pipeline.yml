@@ -160,6 +160,9 @@ jobs:
             # --project-directory указывает compose читать .env из $DEPLOY_DIR (интерполяция image:)
             # и совпадает с env_file ../../.env (переменные внутри контейнера).
             docker login ghcr.io -u ${{ github.actor }} --password-stdin <<< "${{ secrets.GITHUB_TOKEN }}"
+            # Снимаем возможный «чужой» контейнер с тем же именем (созданный ранее
+            # вне этого compose-проекта), иначе up падает с Conflict: name already in use.
+            docker rm -f auth_app 2>/dev/null || true
             docker compose --project-directory $DEPLOY_DIR -f $COMPOSE_FILE pull app
             docker compose --project-directory $DEPLOY_DIR -f $COMPOSE_FILE up -d app
 
