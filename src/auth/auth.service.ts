@@ -961,13 +961,9 @@ export class AuthService {
       const cleanTelegramUsername =
         (username || '').trim().replace(/^@/, '') || null;
 
-      // telegramId нельзя отобрать/заменить, а занятый чужим аккаунтом — нельзя привязать.
-      if (user.telegramId && user.telegramId !== telegramId) {
-        throw new RpcException({
-          code: status.FAILED_PRECONDITION,
-          message: 'Telegram ID cannot be changed once linked',
-        });
-      }
+      // Смена Telegram-аккаунта разрешена: пользователь может привязать другой
+      // Telegram identity (старый telegramId освобождается автоматически).
+      // Новый telegramId, занятый ЧУЖИМ аккаунтом, привязать нельзя — проверка ниже.
 
       const previousTelegramUsername = user.telegramUsername;
       const identityChanged =
