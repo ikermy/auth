@@ -40,7 +40,8 @@ export class GrpcAuthGuard implements CanActivate {
 
     let payload;
     try {
-      payload = await this.jwtService.verifyToken(token);
+      // Только access-токены авторизуют защищённые RPC (SECURITY_REVIEW #2).
+      payload = await this.jwtService.verifyToken(token, 'access');
     } catch {
       throw new UnauthorizedException('Invalid or expired token');
     }

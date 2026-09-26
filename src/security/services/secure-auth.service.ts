@@ -26,9 +26,14 @@ export class SecureAuthService {
       // Добавляем минимальную задержку для защиты от timing attack
       const startTime = Date.now();
 
+      // Email нормализуется (lower/trim) — регистронезависимый поиск.
+      const normalizedEmail = email.trim().toLowerCase();
+
       // Всегда выполняем поиск пользователя и хеширование
       const [user, dummyHash] = await Promise.all([
-        this.prismaService.user.findUnique({ where: { email } }),
+        this.prismaService.user.findFirst({
+          where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+        }),
         Promise.resolve(this.generateDummyHash()), // Заглушка для времени
       ]);
 

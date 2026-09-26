@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma.service';
-import { JwtService } from '@nestjs/jwt';
 import { RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
 import { UsernameService } from './services/username.service';
@@ -99,7 +98,6 @@ export class TelegramAuthService {
 
   constructor(
     private readonly prismaService: PrismaService,
-    private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly usernameService: UsernameService,
     private readonly userIdentityService: UserIdentityService,
@@ -500,41 +498,6 @@ export class TelegramAuthService {
     );
   }
 
-  async generateTokens(
-    userId: string,
-    email: string,
-  ): Promise<{ accessToken: string; refreshToken: string }> {
-    try {
-      // Валидация входных данных
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new Error('Invalid user ID for token generation');
-      }
-
-      if (!email || email.trim().length === 0 || email.length > 255) {
-        throw new Error('Invalid email for token generation');
-      }
-
-      const payload = {
-        sub: userId,
-        email,
-        authType: 'telegram',
-      };
-
-      const accessToken = await this.jwtService.signAsync(payload, {
-        expiresIn: this.configService.getOrThrow<string>('JWT_EXPIRES_IN'),
-      });
-
-      const refreshToken = await this.jwtService.signAsync(payload, {
-        expiresIn: this.configService.getOrThrow<string>('JWT_REFRESH_IN'),
-      });
-
-      return { accessToken, refreshToken };
-    } catch (error) {
-      this.logger.error(`Error generating tokens: ${(error as Error).message}`);
-      throw error;
-    }
-  }
-
   async linkTelegramToExistingAccount(
     userId: string,
     authData: TelegramAuthData,
@@ -794,8 +757,8 @@ export class TelegramAuthService {
     stableId: string,
     userId?: string,
   ): Promise<string> {
-    const existing = await this.prismaService.user.findUnique({
-      where: { username: baseUsername },
+    const existing = await this.prismaService.user.findFirst({
+      where: { username: { equals: baseUsername, mode: 'insensitive' } },
     });
     if (!existing || (userId && existing.id === userId)) {
       return baseUsername;

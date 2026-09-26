@@ -28,13 +28,13 @@ export class UsernameService {
 
     // Если есть Telegram username и он не пустой, используем его
     if (telegramUsername && telegramUsername.trim().length > 0) {
-      const cleanUsername = telegramUsername.trim();
+      const cleanUsername = this.normalizeUserUsername(telegramUsername);
       this.logger.debug(`Using Telegram username: ${cleanUsername}`);
       return cleanUsername;
     }
 
     // Если нет username, используем Telegram ID с префиксом
-    const username = `tg_${telegramId}`;
+    const username = this.normalizeUserUsername(`tg_${telegramId}`);
     this.logger.debug(
       `Using Telegram ID for User username: ${username}`,
     );

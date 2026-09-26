@@ -18,6 +18,7 @@ import { UserMonitoringService } from '../../src/cron/user-monitoring.service';
 function createMockPrisma() {
   const user = {
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     findMany: jest.fn(),
@@ -150,12 +151,13 @@ describe('gRPC E2E smoke (сборка реального AppModule)', () => {
   });
 
   it('register: обработчик возвращает token pair через мок EnhancedJwtService', async () => {
-    mockPrisma.user.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findFirst.mockResolvedValue(null);
     mockPrisma.user.create.mockResolvedValue({
       id: 'u1',
       email: 'smoke@test.com',
       password: 'hashed',
       origin: 'email',
+      username: 'smokeuser',
     });
     mockPrisma.session.create.mockResolvedValue({ id: 's1' });
 
@@ -163,6 +165,7 @@ describe('gRPC E2E smoke (сборка реального AppModule)', () => {
     const result = await controller.register({
       email: 'smoke@test.com',
       password: 'StrongPass123!',
+      username: 'smokeuser',
     } as any);
 
     expect(result.accessToken).toBe('at');
@@ -172,7 +175,11 @@ describe('gRPC E2E smoke (сборка реального AppModule)', () => {
   it('register: слабый пароль отклоняется (валидация DTO)', async () => {
     const controller = app.get(AuthController);
     await expect(
-      controller.register({ email: 'weak@test.com', password: 'weak' } as any),
+      controller.register({
+        email: 'weak@test.com',
+        password: 'weak',
+        username: 'weakuser',
+      } as any),
     ).rejects.toBeDefined();
   });
 });

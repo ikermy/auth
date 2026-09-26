@@ -51,7 +51,7 @@ export class ServiceAccessController {
 
     const hasVerifiedEmail = !!user.email && user.isEmailVerified;
     const hasTelegram = !!user.telegramId;
-    const hasPassword = !!user.password && user.origin === 'email';
+    const hasPassword = !!user.password && user.passwordSetByUser;
     const twoFaEnabled = user.twoFactorEnabled;
     const hasRecoveryPhrase = user.seedPhraseEnabled && !!user.seedPhraseHash;
     const lastRecoveryVerifiedAt =
@@ -101,13 +101,14 @@ export class ServiceAccessController {
     data: GetTelegramIdentityHistoryRequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<GetTelegramIdentityHistoryResponse> {
-    // Общедоступный метод: доступен любому авторизованному пользователю
-    // (активная сессия через guard). Административные привилегии не требуются.
-    const targetUserId = data.userId;
+    // SECURITY_REVIEW #3: единственная граница доверия — principal. Раньше
+    // userId брался из тела, что позволяло любому авторизованному пользователю
+    // читать аудит привязок чужого аккаунта (IDOR). Теперь читаем только свой.
+    const targetUserId = principal.userId;
     if (!targetUserId || targetUserId.trim().length === 0) {
       throw new RpcException({
-        code: status.INVALID_ARGUMENT,
-        message: 'Invalid user ID',
+        code: status.UNAUTHENTICATED,
+        message: 'Unauthorized',
       });
     }
 
@@ -192,8 +193,10 @@ export class ServiceAccessController {
       });
     }
 
-    const user = await this.prismaService.user.findUnique({
-      where: { username: data.username },
+    const user = await this.prismaService.user.findFirst({
+      where: {
+        username: { equals: data.username.trim(), mode: 'insensitive' },
+      },
       select: {
         id: true,
         username: true,

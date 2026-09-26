@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { BCRYPT_COST } from '../common/constants';
 import {
-  LoginRequest,
-  LoginResponse,
   RegisterRequest,
   RegisterResponse,
   EnableSeedPhraseRequest,
@@ -46,6 +44,7 @@ import { SessionService } from '../security/services/session.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
 import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
+import { EmailVerificationService } from './services/email-verification.service';
 import * as crypto from 'crypto';
 
 interface GrpcError {
@@ -67,62 +66,24 @@ export class AuthService {
     private readonly telegramUsernameHistory: TelegramUsernameHistoryService,
     private readonly enhancedJwtService: EnhancedJwtService,
     private readonly sessionService: SessionService,
+    private readonly emailVerificationService: EmailVerificationService,
   ) {}
-  async login(data: LoginRequest): Promise<LoginResponse> {
-    const { email, password } = data;
-
-    const user = await this.prismaService.user.findUnique({
-      where: {
-        email,
-      },
-    });
-
-    if (!user) {
-      const error: GrpcError = {
-        code: status.NOT_FOUND,
-        message: 'User not found',
-      };
-      throw new RpcException(error);
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      const error: GrpcError = {
-        code: status.PERMISSION_DENIED,
-        message: 'Invalid password',
-      };
-      throw new RpcException(error);
-    }
-
-    const { accessToken, refreshToken } = await this.generateTokens(
-      user.id,
-      user.email,
-    );
-    return {
-      accessToken,
-      refreshToken,
-    };
-  }
 
   async register(data: RegisterRequest): Promise<RegisterResponse> {
     try {
-      const { email, password, username } = data;
+      const { password, username } = data;
+      const email = data.email?.trim().toLowerCase();
 
-      const existingUser = await this.prismaService.user.findUnique({
-        where: {
-          email,
-        },
-      });
-
-      if (existingUser) {
-        const error: GrpcError = {
-          code: status.ALREADY_EXISTS,
-          message: 'User already exists',
-        };
-        throw new RpcException(error);
+      if (!email) {
+        throw new RpcException({
+          code: status.INVALID_ARGUMENT,
+          message: 'Email is required',
+        });
       }
 
       // Username обязателен: нормализуем, валидируем, резолвим уникальность.
+      // Проверяем username РАНЬШЕ email, чтобы отдавать корректную ошибку
+      // «Username is already taken», а не «email already registered».
       if (!username || username.trim().length === 0) {
         const error: GrpcError = {
           code: status.INVALID_ARGUMENT,
@@ -130,7 +91,8 @@ export class AuthService {
         };
         throw new RpcException(error);
       }
-      const normalizedUsername = this.usernameService.normalizeUserUsername(username);
+      const normalizedUsername =
+        this.usernameService.normalizeUserUsername(username);
       if (!this.usernameService.isValidUserUsername(normalizedUsername)) {
         const error: GrpcError = {
           code: status.INVALID_ARGUMENT,
@@ -141,15 +103,30 @@ export class AuthService {
       }
 
       // Username immutable: при занятости НЕ делаем фолбэк (username_/username123),
-      // а просим пользователя ввести другое имя.
-      const usernameTaken = await this.prismaService.user.findUnique({
-        where: { username: normalizedUsername },
+      // а просим пользователя ввести другое имя. Регистронезависимо (lower).
+      const usernameTaken = await this.prismaService.user.findFirst({
+        where: {
+          username: { equals: normalizedUsername, mode: 'insensitive' },
+        },
         select: { id: true },
       });
       if (usernameTaken) {
         const error: GrpcError = {
           code: status.ALREADY_EXISTS,
           message: 'Username is already taken',
+        };
+        throw new RpcException(error);
+      }
+
+      const existingUser = await this.prismaService.user.findFirst({
+        where: { email: { equals: email, mode: 'insensitive' } },
+        select: { id: true },
+      });
+
+      if (existingUser) {
+        const error: GrpcError = {
+          code: status.ALREADY_EXISTS,
+          message: 'Email already registered',
         };
         throw new RpcException(error);
       }
@@ -164,18 +141,29 @@ export class AuthService {
             email,
             password: hashedPassword,
             username: normalizedUsername,
+            passwordSetByUser: true,
+            emailVerificationToken:
+              this.emailVerificationService.generateToken(),
+            emailVerificationExpiresAt:
+              this.emailVerificationService.expiresAt(),
           },
         });
       } catch (error) {
-        // Гонка: имя заняли между проверкой и create.
+        // Гонка: имя/email заняли между проверкой и create.
         if (
           error &&
           typeof error === 'object' &&
           (error as { code?: string }).code === 'P2002'
         ) {
+          const target = JSON.stringify(
+            (error as { meta?: { target?: unknown } }).meta?.target ?? '',
+          ).toLowerCase();
+          const isUsername = target.includes('username');
           throw new RpcException({
             code: status.ALREADY_EXISTS,
-            message: 'Username is already taken',
+            message: isUsername
+              ? 'Username is already taken'
+              : 'Email already registered',
           });
         }
         throw error;
@@ -204,43 +192,6 @@ export class AuthService {
     }
   }
 
-  async generateTokens(
-    userId: string,
-    email: string,
-  ): Promise<{ accessToken: string; refreshToken: string }> {
-    try {
-      // Валидация входных данных
-      if (!userId || userId.trim().length === 0 || userId.length > 100) {
-        throw new Error('Invalid user ID for token generation');
-      }
-
-      if (!email || email.trim().length === 0 || email.length > 255) {
-        throw new Error('Invalid email for token generation');
-      }
-
-      const payload = {
-        sub: userId,
-        email,
-      };
-
-      const accessToken = await this.jwtService.signAsync(payload, {
-        expiresIn: this.configService.getOrThrow<string>('JWT_EXPIRES_IN'),
-      });
-
-      const refreshToken = await this.jwtService.signAsync(payload, {
-        expiresIn: this.configService.getOrThrow<string>('JWT_REFRESH_IN'),
-      });
-
-      return {
-        accessToken,
-        refreshToken,
-      };
-    } catch (error) {
-      this.logger.error(`Token generation error: ${(error as Error).message}`);
-      throw error;
-    }
-  }
-
   async refreshToken(
     refreshToken: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
@@ -250,8 +201,8 @@ export class AuthService {
           secret: this.configService.getOrThrow<string>('JWT_SECRET'),
         });
 
-      // Проверяем тип токена
-      if (payload.type && payload.type !== 'refresh') {
+      // Проверяем тип токена: refresh обязателен (токен без type отклоняется).
+      if (payload.type !== 'refresh') {
         const error: GrpcError = {
           code: status.PERMISSION_DENIED,
           message: 'Invalid token type for refresh',
@@ -721,17 +672,6 @@ export class AuthService {
       }
 
       if (
-        !currentPassword ||
-        currentPassword.trim().length === 0 ||
-        currentPassword.length > 1000
-      ) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid current password',
-        });
-      }
-
-      if (
         !newPassword ||
         newPassword.trim().length === 0 ||
         newPassword.length > 1000
@@ -754,16 +694,32 @@ export class AuthService {
         });
       }
 
-      // Проверяем текущий пароль
-      const isCurrentPasswordValid = await bcrypt.compare(
-        currentPassword,
-        user.password,
-      );
-      if (!isCurrentPasswordValid) {
-        throw new RpcException({
-          code: status.PERMISSION_DENIED,
-          message: 'Invalid current password',
-        });
+      // Если пользователь ещё не задавал пароль (Telegram-only с системным
+      // placeholder), это УСТАНОВКА пароля, а не смена: currentPassword не нужен.
+      const isSettingPassword = !user.passwordSetByUser;
+
+      if (!isSettingPassword) {
+        if (
+          !currentPassword ||
+          currentPassword.trim().length === 0 ||
+          currentPassword.length > 1000
+        ) {
+          throw new RpcException({
+            code: status.INVALID_ARGUMENT,
+            message: 'Invalid current password',
+          });
+        }
+
+        const isCurrentPasswordValid = await bcrypt.compare(
+          currentPassword,
+          user.password,
+        );
+        if (!isCurrentPasswordValid) {
+          throw new RpcException({
+            code: status.PERMISSION_DENIED,
+            message: 'Invalid current password',
+          });
+        }
       }
 
       // Проверяем, что новый пароль отличается от текущего
@@ -779,12 +735,13 @@ export class AuthService {
       const salt = await bcrypt.genSalt(BCRYPT_COST);
       const hashedNewPassword = await bcrypt.hash(newPassword, salt);
 
-      // Обновляем пароль
+      // Обновляем пароль и фиксируем, что он задан пользователем
       await this.prismaService.user.update({
         where: { id: userId },
         data: {
           password: hashedNewPassword,
           passwordChangedAt: new Date(),
+          passwordSetByUser: true,
         },
       });
 
@@ -792,10 +749,14 @@ export class AuthService {
       // чтобы старые refresh-токены перестали действовать.
       await this.sessionService.deactivateAll(userId);
 
-      this.logger.log(`🔐 [PASSWORD] Changed for user ${userId}`);
+      this.logger.log(
+        `🔐 [PASSWORD] ${isSettingPassword ? 'Set' : 'Changed'} for user ${userId}`,
+      );
       return {
         success: true,
-        message: 'Password changed successfully',
+        message: isSettingPassword
+          ? 'Password set successfully'
+          : 'Password changed successfully',
       };
     } catch (error) {
       this.logger.error(`Password change error: ${(error as Error).message}`);
@@ -813,7 +774,8 @@ export class AuthService {
 
   async changeEmail(data: ChangeEmailRequest): Promise<ChangeEmailResponse> {
     try {
-      const { userId, currentPassword, newEmail } = data;
+      const { userId, currentPassword } = data;
+      const newEmail = data.newEmail?.trim().toLowerCase();
 
       // Валидация входных данных
       if (!userId || userId.trim().length === 0 || userId.length > 100) {
@@ -875,16 +837,16 @@ export class AuthService {
       }
 
       // Проверяем, что новый email отличается от текущего
-      if (user.email === newEmail) {
+      if ((user.email || '').toLowerCase() === newEmail) {
         throw new RpcException({
           code: status.INVALID_ARGUMENT,
           message: 'New email must be different from current email',
         });
       }
 
-      // Проверяем, что новый email не занят
-      const existingUser = await this.prismaService.user.findUnique({
-        where: { email: newEmail },
+      // Проверяем, что новый email не занят (регистронезависимо)
+      const existingUser = await this.prismaService.user.findFirst({
+        where: { email: { equals: newEmail, mode: 'insensitive' } },
       });
 
       if (existingUser) {
@@ -900,7 +862,11 @@ export class AuthService {
         data: {
           email: newEmail,
           isEmailVerified: false, // Сбрасываем верификацию email
-          emailVerificationToken: null,
+          emailVerifiedAt: null,
+          emailVerificationToken:
+            this.emailVerificationService.generateToken(),
+          emailVerificationExpiresAt:
+            this.emailVerificationService.expiresAt(),
         },
       });
 
@@ -1196,7 +1162,8 @@ export class AuthService {
   }
 
   async linkEmailToAccount(data: LinkEmailRequest): Promise<LinkEmailResponse> {
-    const { userId, email, password } = data;
+    const { userId, password } = data;
+    const email = data.email?.trim().toLowerCase();
 
     this.logger.log(`📧 [EMAIL] LINK request received for user ${userId}`);
 
@@ -1256,8 +1223,8 @@ export class AuthService {
       // транзакции, приоритет linking над фоновой sync — §5.1). При конкурентном
       // занятии email уникальный индекс даёт P2002 -> ALREADY_EXISTS.
       await this.prismaService.$transaction(async (tx) => {
-        const existingEmailUser = await tx.user.findUnique({
-          where: { email: email.toLowerCase() },
+        const existingEmailUser = await tx.user.findFirst({
+          where: { email: { equals: email, mode: 'insensitive' } },
         });
 
         if (existingEmailUser && existingEmailUser.id !== userId) {
@@ -1273,11 +1240,16 @@ export class AuthService {
         await tx.user.update({
           where: { id: userId },
           data: {
-            email: email.toLowerCase(),
+            email,
             password: hashedPassword,
             passwordChangedAt: new Date(),
+            passwordSetByUser: true,
             isEmailVerified: false, // Требует верификации
-            emailVerificationToken: crypto.randomBytes(32).toString('hex'),
+            emailVerifiedAt: null,
+            emailVerificationToken:
+              this.emailVerificationService.generateToken(),
+            emailVerificationExpiresAt:
+              this.emailVerificationService.expiresAt(),
             origin: 'email', // Аккаунт получил email-identity
           },
         });

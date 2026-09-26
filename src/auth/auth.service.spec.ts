@@ -9,6 +9,7 @@ import { SessionService } from '../security/services/session.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
 import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
+import { EmailVerificationService } from './services/email-verification.service';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -87,6 +88,13 @@ describe('AuthService', () => {
             findByRefreshJti: jest.fn(),
             deactivate: jest.fn(),
             deactivateAll: jest.fn(),
+          },
+        },
+        {
+          provide: EmailVerificationService,
+          useValue: {
+            generateToken: jest.fn().mockReturnValue('token'),
+            expiresAt: jest.fn().mockReturnValue(new Date()),
           },
         },
       ],

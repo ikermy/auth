@@ -183,8 +183,13 @@ export class EnhancedJwtService {
     }
   }
 
-  // Верификация токена с проверкой отзыва
-  async verifyToken(token: string): Promise<JwtPayload> {
+  // Верификация токена с проверкой отзыва и типа токена.
+  // expectedType обязателен для защиты от использования refresh-токена как access
+  // (SECURITY_REVIEW #2): access-операции принимают только type==='access'.
+  async verifyToken(
+    token: string,
+    expectedType?: 'access' | 'refresh',
+  ): Promise<JwtPayload> {
     // Валидация входных данных
     if (!token || token.trim().length === 0 || token.length > 2000) {
       throw new Error('Invalid token for verification');
@@ -192,6 +197,15 @@ export class EnhancedJwtService {
 
     try {
       const payload = await this.jwtService.verifyAsync(token);
+
+      // Проверяем назначение токена. Токен без type считается недействительным.
+      if (expectedType && payload.type !== expectedType) {
+        throw new Error(
+          `Invalid token type: expected ${expectedType}, got ${String(
+            payload.type,
+          )}`,
+        );
+      }
 
       // Проверяем, не отозван ли токен
       const isRevoked = await this.isTokenRevoked(payload.jti);

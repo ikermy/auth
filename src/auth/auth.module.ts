@@ -8,6 +8,7 @@ import { TelegramAuthService } from './telegram-auth.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
 import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
+import { EmailVerificationService } from './services/email-verification.service';
 import { SecurityModule } from '../security/security.module';
 import { HttpModule } from '@nestjs/axios';
 import { GrpcAuthGuard } from './guards/grpc-auth.guard';
@@ -29,6 +30,7 @@ import { GrpcAuthGuard } from './guards/grpc-auth.guard';
     UsernameService,
     UserIdentityService,
     TelegramUsernameHistoryService,
+    EmailVerificationService,
     {
       provide: APP_GUARD,
       useClass: GrpcAuthGuard,

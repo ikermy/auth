@@ -47,6 +47,31 @@ export interface RegisterResponse {
   refreshToken: string;
 }
 
+export interface RequestEmailVerificationRequest {
+  /** userId берётся из principal; поле оставлено для обратной совместимости. */
+  userId: string;
+}
+
+export interface RequestEmailVerificationResponse {
+  success: boolean;
+  message: string;
+  email: string;
+  /** ISO-8601 */
+  expiresAt: string;
+}
+
+export interface VerifyEmailRequest {
+  /** одноразовый токен из письма */
+  token: string;
+}
+
+export interface VerifyEmailResponse {
+  success: boolean;
+  message: string;
+  email: string;
+  isEmailVerified: boolean;
+}
+
 export interface RefreshTokenRequest {
   /** max 2000 chars */
   refreshToken: string;
@@ -733,6 +758,268 @@ export const RegisterResponse: MessageFns<RegisterResponse> = {
     const message = createBaseRegisterResponse();
     message.accessToken = object.accessToken ?? "";
     message.refreshToken = object.refreshToken ?? "";
+    return message;
+  },
+};
+
+function createBaseRequestEmailVerificationRequest(): RequestEmailVerificationRequest {
+  return { userId: "" };
+}
+
+export const RequestEmailVerificationRequest: MessageFns<RequestEmailVerificationRequest> = {
+  encode(message: RequestEmailVerificationRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.userId !== "") {
+      writer.uint32(10).string(message.userId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RequestEmailVerificationRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRequestEmailVerificationRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.userId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  create<I extends Exact<DeepPartial<RequestEmailVerificationRequest>, I>>(base?: I): RequestEmailVerificationRequest {
+    return RequestEmailVerificationRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<RequestEmailVerificationRequest>, I>>(
+    object: I,
+  ): RequestEmailVerificationRequest {
+    const message = createBaseRequestEmailVerificationRequest();
+    message.userId = object.userId ?? "";
+    return message;
+  },
+};
+
+function createBaseRequestEmailVerificationResponse(): RequestEmailVerificationResponse {
+  return { success: false, message: "", email: "", expiresAt: "" };
+}
+
+export const RequestEmailVerificationResponse: MessageFns<RequestEmailVerificationResponse> = {
+  encode(message: RequestEmailVerificationResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.success !== false) {
+      writer.uint32(8).bool(message.success);
+    }
+    if (message.message !== "") {
+      writer.uint32(18).string(message.message);
+    }
+    if (message.email !== "") {
+      writer.uint32(26).string(message.email);
+    }
+    if (message.expiresAt !== "") {
+      writer.uint32(34).string(message.expiresAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RequestEmailVerificationResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRequestEmailVerificationResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.success = reader.bool();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.message = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.email = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.expiresAt = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  create<I extends Exact<DeepPartial<RequestEmailVerificationResponse>, I>>(
+    base?: I,
+  ): RequestEmailVerificationResponse {
+    return RequestEmailVerificationResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<RequestEmailVerificationResponse>, I>>(
+    object: I,
+  ): RequestEmailVerificationResponse {
+    const message = createBaseRequestEmailVerificationResponse();
+    message.success = object.success ?? false;
+    message.message = object.message ?? "";
+    message.email = object.email ?? "";
+    message.expiresAt = object.expiresAt ?? "";
+    return message;
+  },
+};
+
+function createBaseVerifyEmailRequest(): VerifyEmailRequest {
+  return { token: "" };
+}
+
+export const VerifyEmailRequest: MessageFns<VerifyEmailRequest> = {
+  encode(message: VerifyEmailRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.token !== "") {
+      writer.uint32(10).string(message.token);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): VerifyEmailRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseVerifyEmailRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.token = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  create<I extends Exact<DeepPartial<VerifyEmailRequest>, I>>(base?: I): VerifyEmailRequest {
+    return VerifyEmailRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<VerifyEmailRequest>, I>>(object: I): VerifyEmailRequest {
+    const message = createBaseVerifyEmailRequest();
+    message.token = object.token ?? "";
+    return message;
+  },
+};
+
+function createBaseVerifyEmailResponse(): VerifyEmailResponse {
+  return { success: false, message: "", email: "", isEmailVerified: false };
+}
+
+export const VerifyEmailResponse: MessageFns<VerifyEmailResponse> = {
+  encode(message: VerifyEmailResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.success !== false) {
+      writer.uint32(8).bool(message.success);
+    }
+    if (message.message !== "") {
+      writer.uint32(18).string(message.message);
+    }
+    if (message.email !== "") {
+      writer.uint32(26).string(message.email);
+    }
+    if (message.isEmailVerified !== false) {
+      writer.uint32(32).bool(message.isEmailVerified);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): VerifyEmailResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseVerifyEmailResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.success = reader.bool();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.message = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.email = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.isEmailVerified = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  create<I extends Exact<DeepPartial<VerifyEmailResponse>, I>>(base?: I): VerifyEmailResponse {
+    return VerifyEmailResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<VerifyEmailResponse>, I>>(object: I): VerifyEmailResponse {
+    const message = createBaseVerifyEmailResponse();
+    message.success = object.success ?? false;
+    message.message = object.message ?? "";
+    message.email = object.email ?? "";
+    message.isEmailVerified = object.isEmailVerified ?? false;
     return message;
   },
 };
@@ -4907,6 +5194,29 @@ export const AuthServiceService = {
     responseSerialize: (value: LinkEmailResponse): Buffer => Buffer.from(LinkEmailResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): LinkEmailResponse => LinkEmailResponse.decode(value),
   },
+  /** Email verification (подтверждение владения email) */
+  requestEmailVerification: {
+    path: "/auth.AuthService/requestEmailVerification",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: RequestEmailVerificationRequest): Buffer =>
+      Buffer.from(RequestEmailVerificationRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): RequestEmailVerificationRequest =>
+      RequestEmailVerificationRequest.decode(value),
+    responseSerialize: (value: RequestEmailVerificationResponse): Buffer =>
+      Buffer.from(RequestEmailVerificationResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): RequestEmailVerificationResponse =>
+      RequestEmailVerificationResponse.decode(value),
+  },
+  verifyEmail: {
+    path: "/auth.AuthService/verifyEmail",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: VerifyEmailRequest): Buffer => Buffer.from(VerifyEmailRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): VerifyEmailRequest => VerifyEmailRequest.decode(value),
+    responseSerialize: (value: VerifyEmailResponse): Buffer => Buffer.from(VerifyEmailResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): VerifyEmailResponse => VerifyEmailResponse.decode(value),
+  },
   /** User identity management */
   changeNickname: {
     path: "/auth.AuthService/changeNickname",
@@ -5087,6 +5397,9 @@ export interface AuthServiceServer extends UntypedServiceImplementation {
   changeTelegramAccount: handleUnaryCall<ChangeTelegramAccountRequest, ChangeTelegramAccountResponse>;
   terminateAllSessions: handleUnaryCall<TerminateAllSessionsRequest, TerminateAllSessionsResponse>;
   linkEmailToAccount: handleUnaryCall<LinkEmailRequest, LinkEmailResponse>;
+  /** Email verification (подтверждение владения email) */
+  requestEmailVerification: handleUnaryCall<RequestEmailVerificationRequest, RequestEmailVerificationResponse>;
+  verifyEmail: handleUnaryCall<VerifyEmailRequest, VerifyEmailResponse>;
   /** User identity management */
   changeNickname: handleUnaryCall<ChangeNicknameRequest, ChangeNicknameResponse>;
   changeAvatar: handleUnaryCall<ChangeAvatarRequest, ChangeAvatarResponse>;
@@ -5340,6 +5653,37 @@ export interface AuthServiceClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: LinkEmailResponse) => void,
+  ): ClientUnaryCall;
+  /** Email verification (подтверждение владения email) */
+  requestEmailVerification(
+    request: RequestEmailVerificationRequest,
+    callback: (error: ServiceError | null, response: RequestEmailVerificationResponse) => void,
+  ): ClientUnaryCall;
+  requestEmailVerification(
+    request: RequestEmailVerificationRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: RequestEmailVerificationResponse) => void,
+  ): ClientUnaryCall;
+  requestEmailVerification(
+    request: RequestEmailVerificationRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: RequestEmailVerificationResponse) => void,
+  ): ClientUnaryCall;
+  verifyEmail(
+    request: VerifyEmailRequest,
+    callback: (error: ServiceError | null, response: VerifyEmailResponse) => void,
+  ): ClientUnaryCall;
+  verifyEmail(
+    request: VerifyEmailRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: VerifyEmailResponse) => void,
+  ): ClientUnaryCall;
+  verifyEmail(
+    request: VerifyEmailRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: VerifyEmailResponse) => void,
   ): ClientUnaryCall;
   /** User identity management */
   changeNickname(

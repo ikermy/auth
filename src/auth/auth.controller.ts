@@ -52,6 +52,10 @@ import {
   Disable2FARequest,
   Disable2FAResponse,
   GetAnomalyStatsRequest,
+  RequestEmailVerificationRequest,
+  RequestEmailVerificationResponse,
+  VerifyEmailRequest,
+  VerifyEmailResponse,
 } from './auth';
 import { SecurityLoggerService } from '../security/security-logger.service';
 import { BruteForceService } from '../security/services/brute-force.service';
@@ -63,6 +67,7 @@ import { EncryptionService } from '../security/services/encryption.service';
 import { UsernameService } from './services/username.service';
 import { UserIdentityService } from './services/user-identity.service';
 import { TelegramUsernameHistoryService } from './services/telegram-username-history.service';
+import { EmailVerificationService } from './services/email-verification.service';
 import { PrismaService } from '../prisma.service';
 import { RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
@@ -94,13 +99,15 @@ export class AuthController {
     private readonly usernameService: UsernameService,
     private readonly userIdentityService: UserIdentityService,
     private readonly telegramUsernameHistory: TelegramUsernameHistoryService,
+    private readonly emailVerificationService: EmailVerificationService,
     private readonly prismaService: PrismaService,
   ) {}
 
   @Public()
   @GrpcMethod('AuthService', 'login')
   async login(data: LoginRequest, metadata: any): Promise<LoginResponse> {
-    const { email, password } = data;
+    const email = data.email?.trim().toLowerCase();
+    const { password } = data;
     const ipAddress =
       metadata.get('x-forwarded-for')?.[0] ||
       metadata.get('x-real-ip')?.[0] ||
@@ -117,6 +124,13 @@ export class AuthController {
       const isBlocked = await this.bruteForceService.isBlocked(email);
       if (isBlocked) {
         await this.securityLogger.logAuthAttempt('gRPC', email, false);
+        await this.recordLoginAttempt({
+          email,
+          ipAddress,
+          userAgent,
+          success: false,
+          failureReason: 'blocked',
+        });
         throw new RpcException({
           code: status.RESOURCE_EXHAUSTED,
           message: 'Too many failed attempts. Please try again later.',
@@ -133,10 +147,41 @@ export class AuthController {
         // Записываем неудачную попытку
         await this.bruteForceService.recordFailedAttempt(email);
         await this.securityLogger.logAuthAttempt('gRPC', email, false);
+        await this.recordLoginAttempt({
+          email,
+          ipAddress,
+          userAgent,
+          success: false,
+          failureReason: 'invalid_credentials',
+        });
         throw new Error('Invalid credentials');
       }
 
-      // 3. Анализ аномалий поведения
+      // 3. Проверяем 2FA ДО выдачи токенов, чтобы не создавать активную сессию.
+      // (Полноценный 2FA-challenge отложен: frontend-реализации нет.)
+      const user = await this.prismaService.user.findUnique({
+        where: { id: authResult.user.id },
+      });
+      if (user && user.twoFactorEnabled) {
+        this.securityLogger.logJwtEvent(
+          '2FA_REQUIRED',
+          `User ${email} requires 2FA verification`,
+        );
+        await this.recordLoginAttempt({
+          userId: authResult.user.id,
+          email,
+          ipAddress,
+          userAgent,
+          success: false,
+          failureReason: '2fa_required',
+        });
+        return {
+          accessToken: '2FA_REQUIRED',
+          refreshToken: '2FA_REQUIRED',
+        };
+      }
+
+      // 4. Анализ аномалий поведения
       const behavior: {
         userId: string;
         ipAddress: string;
@@ -164,33 +209,24 @@ export class AuthController {
         // Можно добавить дополнительную проверку или блокировку
       }
 
-      // 4. Генерируем токены с JTI (создаёт активную сессию)
+      // 5. Генерируем токены с JTI (создаёт активную сессию)
       const tokens = await this.enhancedJwtService.generateTokens(
         authResult.user.id,
         authResult.user.email,
         { ipAddress, userAgent },
       );
 
-      // 5. Проверяем 2FA статус пользователя
-      const user = await this.prismaService.user.findUnique({
-        where: { email },
-      });
-      if (user && user.twoFactorEnabled) {
-        // Если 2FA включен, возвращаем специальный токен для 2FA проверки
-        this.securityLogger.logJwtEvent(
-          '2FA_REQUIRED',
-          `User ${email} requires 2FA verification`,
-        );
-        return {
-          accessToken: '2FA_REQUIRED',
-          refreshToken: '2FA_REQUIRED',
-        };
-      }
-
-      // 7. Очищаем счетчик неудачных попыток
+      // 6. Очищаем счетчик неудачных попыток
       await this.bruteForceService.clearFailedAttempts(email);
 
       await this.securityLogger.logAuthAttempt('gRPC', email, true);
+      await this.recordLoginAttempt({
+        userId: authResult.user.id,
+        email,
+        ipAddress,
+        userAgent,
+        success: true,
+      });
       return {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
@@ -762,6 +798,14 @@ export class AuthController {
         true,
       );
 
+      await this.recordLoginAttempt({
+        userId: user.id,
+        email: user.email || `tg_${telegramId}`,
+        ipAddress,
+        userAgent,
+        success: true,
+      });
+
       return {
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
@@ -773,6 +817,14 @@ export class AuthController {
         `telegram_${telegramId}`,
         false,
       );
+
+      await this.recordLoginAttempt({
+        email: `tg_${telegramId}`,
+        ipAddress: 'telegram_oauth',
+        userAgent: 'telegram',
+        success: false,
+        failureReason: (error as Error).message,
+      });
 
       // Безопасная обработка ошибок
       if (error instanceof RpcException) {
@@ -794,162 +846,15 @@ export class AuthController {
     data: TelegramLoginRequest,
     metadata?: any,
   ): Promise<TelegramLoginResponse> {
-    const { telegramId, authDate, hash } = data;
-
-    this.logger.log(
-      `📱 [TELEGRAM] LOGIN request received for Telegram ID: ${telegramId}`,
-    );
-
-    try {
-      // 1. Валидация входных данных
-      if (
-        !telegramId ||
-        telegramId.trim().length === 0 ||
-        telegramId.length > 50
-      ) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid telegram ID',
-        });
-      }
-
-      if (!authDate || !hash || authDate.length > 20 || hash.length > 100) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Missing or invalid authentication data',
-        });
-      }
-
-      // 2. Проверяем brute force блокировку
-      const isBlocked = await this.bruteForceService.isBlocked(
-        `telegram_${telegramId}`,
-      );
-      if (isBlocked) {
-        await this.securityLogger.logAuthAttempt(
-          'gRPC_TELEGRAM_LOGIN',
-          `telegram_${telegramId}`,
-          false,
-        );
-        throw new RpcException({
-          code: status.RESOURCE_EXHAUSTED,
-          message: 'Too many failed attempts. Please try again later.',
-        });
-      }
-
-      // 3. Находим пользователя одним запросом
-      const user = await this.prismaService.user.findUnique({
-        where: { telegramId },
-        select: {
-          id: true,
-          email: true,
-          telegramAuth: true,
-          telegramId: true,
-          telegramFirstName: true,
-          telegramLastName: true,
-          telegramUsername: true,
-          telegramPhotoUrl: true,
-          isTelegramVerified: true,
-        },
-      });
-
-      if (!user || !user.isTelegramVerified) {
-        await this.bruteForceService.recordFailedAttempt(
-          `telegram_${telegramId}`,
-        );
-        await this.securityLogger.logAuthAttempt(
-          'gRPC_TELEGRAM_LOGIN',
-          `telegram_${telegramId}`,
-          false,
-        );
-        throw new RpcException({
-          code: status.NOT_FOUND,
-          message: 'User not found or not verified via Telegram.',
-        });
-      }
-
-      // 5. Проверяем время authDate (базовая валидация времени)
-      const authTimestamp = parseInt(authDate, 10);
-
-      // Проверка на валидность timestamp
-      if (
-        isNaN(authTimestamp) ||
-        authTimestamp <= 0 ||
-        authTimestamp > 9999999999
-      ) {
-        await this.bruteForceService.recordFailedAttempt(
-          `telegram_${telegramId}`,
-        );
-        await this.securityLogger.logAuthAttempt(
-          'gRPC_TELEGRAM_LOGIN',
-          `telegram_${telegramId}`,
-          false,
-        );
-        throw new RpcException({
-          code: status.UNAUTHENTICATED,
-          message: 'Invalid authentication timestamp',
-        });
-      }
-
-      const currentTimestamp = Math.floor(Date.now() / 1000);
-      const maxAge = 24 * 60 * 60; // 24 часа
-
-      if (isNaN(authTimestamp) || currentTimestamp - authTimestamp > maxAge) {
-        await this.bruteForceService.recordFailedAttempt(
-          `telegram_${telegramId}`,
-        );
-        await this.securityLogger.logAuthAttempt(
-          'gRPC_TELEGRAM_LOGIN',
-          `telegram_${telegramId}`,
-          false,
-        );
-        throw new RpcException({
-          code: status.UNAUTHENTICATED,
-          message: 'Authentication data expired or invalid',
-        });
-      }
-
-      // 6. Platform username не синхронизируется с Telegram (immutable).
-
-      // 7. Генерируем токены (создаёт активную сессию)
-      const tokens = await this.enhancedJwtService.generateTokens(
-        user.id,
-        user.email || user.telegramAuth || '',
-      );
-
-      // 8. Очищаем счетчик неудачных попыток
-      await this.bruteForceService.clearFailedAttempts(
-        `telegram_${telegramId}`,
-      );
-
-      await this.securityLogger.logAuthAttempt(
-        'gRPC_TELEGRAM_LOGIN',
-        `telegram_${telegramId}`,
-        true,
-      );
-
-      return {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-      };
-    } catch (error) {
-      await this.securityLogger.logAuthAttempt(
-        'gRPC_TELEGRAM_LOGIN',
-        `telegram_${telegramId}`,
-        false,
-      );
-
-      // Безопасная обработка ошибок
-      if (error instanceof RpcException) {
-        throw error;
-      }
-
-      this.logger.error(`Telegram login error: ${(error as Error).message}`);
-
-      throw new RpcException({
-        code: status.INTERNAL,
-        message: 'Authentication failed',
-      });
-    }
+    // SECURITY_REVIEW #1: TelegramLoginRequest не содержит first_name/username/
+    // photo_url, поэтому HMAC-подпись проверить невозможно. RPC выведен из
+    // эксплуатации; используйте telegramAuth с полным подписанным payload.
+    void data;
+    void metadata;
+    throw new RpcException({
+      code: status.UNIMPLEMENTED,
+      message: 'telegramLogin is deprecated. Use telegramAuth.',
+    });
   }
 
   @GrpcMethod('AuthService', 'linkTelegramAccount')
@@ -1158,7 +1063,7 @@ export class AuthController {
       }
 
       // 4. Включаем seed фразу
-      const result = await this.authService.enableSeedPhrase(data);
+      const result = await this.authService.enableSeedPhrase({ ...data, userId });
 
       // 5. Логируем успешное включение
       this.securityLogger.logJwtEvent(
@@ -1237,7 +1142,7 @@ export class AuthController {
       }
 
       // 3. Проверяем seed фразу
-      const result = await this.authService.verifySeedPhrase(data);
+      const result = await this.authService.verifySeedPhrase({ ...data, userId });
 
       if (result.success) {
         // 4. Очищаем счетчик неудачных попыток
@@ -1348,7 +1253,7 @@ export class AuthController {
       }
 
       // 2. Отключаем seed фразу
-      const result = await this.authService.disableSeedPhrase(data);
+      const result = await this.authService.disableSeedPhrase({ ...data, userId });
 
       // 3. Логируем отключение
       this.securityLogger.logJwtEvent(
@@ -1398,7 +1303,7 @@ export class AuthController {
       }
 
       // 2. Получаем статус seed фразы
-      const result = await this.authService.getSeedPhraseStatus(data);
+      const result = await this.authService.getSeedPhraseStatus({ ...data, userId });
 
       // 3. Логируем запрос статуса
       this.securityLogger.logJwtEvent(
@@ -1451,17 +1356,6 @@ export class AuthController {
       }
 
       if (
-        !currentPassword ||
-        currentPassword.trim().length === 0 ||
-        currentPassword.length > 1000
-      ) {
-        throw new RpcException({
-          code: status.INVALID_ARGUMENT,
-          message: 'Invalid current password',
-        });
-      }
-
-      if (
         !newPassword ||
         newPassword.trim().length === 0 ||
         newPassword.length > 1000
@@ -1469,6 +1363,19 @@ export class AuthController {
         throw new RpcException({
           code: status.INVALID_ARGUMENT,
           message: 'Invalid new password',
+        });
+      }
+
+      // currentPassword обязателен только для аккаунтов, где пароль уже задан
+      // пользователем. Для Telegram-аккаунта с системным паролем это установка
+      // пароля — проверку выполняет authService.changePassword.
+      if (
+        currentPassword &&
+        (currentPassword.trim().length === 0 || currentPassword.length > 1000)
+      ) {
+        throw new RpcException({
+          code: status.INVALID_ARGUMENT,
+          message: 'Invalid current password',
         });
       }
 
@@ -1572,7 +1479,7 @@ export class AuthController {
       }
 
       // 3. Меняем email
-      const result = await this.authService.changeEmail(data);
+      const result = await this.authService.changeEmail({ ...data, userId });
 
       // 4. Логируем успешное изменение
       this.securityLogger.logJwtEvent(
@@ -1774,7 +1681,7 @@ export class AuthController {
       }
 
       // 2. Завершаем все сессии
-      const result = await this.authService.terminateAllSessions(data);
+      const result = await this.authService.terminateAllSessions({ ...data, userId });
 
       // 3. Логируем успешное завершение сессий
       this.securityLogger.logJwtEvent(
@@ -1915,10 +1822,12 @@ export class AuthController {
         origin?: 'email';
         isEmailVerified: boolean;
         emailVerificationToken: string;
+        emailVerificationExpiresAt: Date;
       } = {
         email: email.toLowerCase(),
         isEmailVerified: false, // Требует верификации
-        emailVerificationToken: crypto.randomBytes(32).toString('hex'),
+        emailVerificationToken: this.emailVerificationService.generateToken(),
+        emailVerificationExpiresAt: this.emailVerificationService.expiresAt(),
       };
 
       if (password && password.trim().length > 0) {
@@ -1953,6 +1862,83 @@ export class AuthController {
       throw new RpcException({
         code: status.INTERNAL,
         message: 'Failed to link email to account',
+      });
+    }
+  }
+
+  @GrpcMethod('AuthService', 'requestEmailVerification')
+  @Throttle({ default: { ttl: 300000, limit: 3 } }) // 3 запроса в 5 минут
+  async requestEmailVerification(
+    @Payload() _data: RequestEmailVerificationRequest,
+    @CurrentUser() principal: AuthPrincipal,
+  ): Promise<RequestEmailVerificationResponse> {
+    const userId = principal.userId;
+
+    this.logger.log(
+      `📧 [EMAIL] VERIFY-REQUEST received for user ${userId}`,
+    );
+
+    try {
+      const result = await this.emailVerificationService.issueForUser(userId);
+
+      this.securityLogger.logJwtEvent(
+        'EMAIL_VERIFICATION_REQUESTED',
+        `User ${userId} requested email verification`,
+      );
+
+      return {
+        success: true,
+        message:
+          'Verification token issued. Please check your email for confirmation.',
+        email: result.email,
+        expiresAt: result.expiresAt.toISOString(),
+      };
+    } catch (error) {
+      this.logger.error(
+        `Email verification request error: ${(error as Error).message}`,
+      );
+
+      if (error instanceof RpcException) {
+        throw error;
+      }
+
+      throw new RpcException({
+        code: status.INTERNAL,
+        message: 'Failed to issue email verification token',
+      });
+    }
+  }
+
+  @Public()
+  @GrpcMethod('AuthService', 'verifyEmail')
+  @Throttle({ default: { ttl: 300000, limit: 10 } }) // 10 попыток в 5 минут
+  async verifyEmail(
+    @Payload() data: VerifyEmailRequest,
+  ): Promise<VerifyEmailResponse> {
+    try {
+      const result = await this.emailVerificationService.verify(data.token);
+
+      this.securityLogger.logJwtEvent(
+        'EMAIL_VERIFIED',
+        `Email verified for ${result.email}`,
+      );
+
+      return {
+        success: true,
+        message: 'Email verified successfully',
+        email: result.email,
+        isEmailVerified: true,
+      };
+    } catch (error) {
+      this.logger.error(`Email verify error: ${(error as Error).message}`);
+
+      if (error instanceof RpcException) {
+        throw error;
+      }
+
+      throw new RpcException({
+        code: status.INTERNAL,
+        message: 'Failed to verify email',
       });
     }
   }
@@ -2067,8 +2053,9 @@ export class AuthController {
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<ChangeAvatarResponse> {
     const photoBase64 = data?.photoBase64 || '';
-    // userId из JWT-принципала (GrpcAuthGuard), fallback — из тела запроса.
-    const userId = principal?.userId || data?.userId || '';
+    // SECURITY_REVIEW #3: userId только из JWT-принципала (GrpcAuthGuard);
+    // значение из тела игнорируется.
+    const userId = principal.userId;
 
     this.logger.log(`🔄 [USER] Avatar change request for user ${userId}`);
 
@@ -2114,7 +2101,7 @@ export class AuthController {
       }
 
       // 2. Получаем User identity
-      const result = await this.authService.getUserIdentity(data);
+      const result = await this.authService.getUserIdentity({ ...data, userId });
 
       // 3. Логируем запрос
       this.securityLogger.logJwtEvent(
@@ -2147,10 +2134,11 @@ export class AuthController {
 
   @GrpcMethod('AuthService', 'getUserProfile')
   async getUserProfile(
-    data: GetUserProfileRequest,
+    @Payload() _data: GetUserProfileRequest,
     @CurrentUser() principal: AuthPrincipal,
   ): Promise<GetUserProfileResponse> {
-    const userId = principal?.userId || data?.userId || '';
+    // SECURITY_REVIEW #3: userId только из JWT-принципала; тело игнорируется.
+    const userId = principal.userId;
 
     this.logger.log(`🔄 [USER] Profile request for user ${userId}`);
 
@@ -2226,7 +2214,7 @@ export class AuthController {
       }
 
       // 2. Получаем альтернативы
-      const result = await this.authService.suggestUsernameAlternatives(data);
+      const result = await this.authService.suggestUsernameAlternatives({ ...data, userId });
 
       // 3. Логируем запрос
       this.securityLogger.logJwtEvent(
@@ -2258,6 +2246,36 @@ export class AuthController {
   }
 
   /**
+   * Запись попытки входа в LoginAttempt (SECURITY_REVIEW #6). Питает anomaly
+   * detection и security-историю. Ошибки записи не должны ломать сам вход.
+   */
+  private async recordLoginAttempt(params: {
+    userId?: string | null;
+    email: string;
+    ipAddress?: string;
+    userAgent?: string;
+    success: boolean;
+    failureReason?: string;
+  }): Promise<void> {
+    try {
+      await this.prismaService.loginAttempt.create({
+        data: {
+          userId: params.userId ?? null,
+          email: params.email,
+          ipAddress: params.ipAddress || 'unknown',
+          userAgent: params.userAgent ?? null,
+          success: params.success,
+          failureReason: params.failureReason ?? null,
+        },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to record login attempt: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /**
    * Повторное подтверждение для чувствительных операций (§5.5 / §7 / §11):
    * текущий пароль (если есть password-credential) + активный TOTP (если 2FA включена).
    * Креды передаются клиентом в gRPC metadata: x-current-password, x-otp-token.
@@ -2278,7 +2296,7 @@ export class AuthController {
 
     const metadataGet = metadata?.get?.bind(metadata) || (() => []);
 
-    if (user.password) {
+    if (user.passwordSetByUser) {
       const currentPassword = metadataGet('x-current-password')?.[0];
       if (!currentPassword || currentPassword.trim().length === 0) {
         throw new RpcException({

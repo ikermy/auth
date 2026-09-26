@@ -223,21 +223,6 @@ describe('TelegramAuthService', () => {
     });
   });
 
-  describe('generateTokens', () => {
-    it('should generate access and refresh tokens', async () => {
-      jwtService.signAsync.mockResolvedValue('mock-token');
-
-      const result = await service.generateTokens(
-        'user-id',
-        'test@example.com',
-      );
-
-      expect(result.accessToken).toBe('mock-token');
-      expect(result.refreshToken).toBe('mock-token');
-      expect(jwtService.signAsync).toHaveBeenCalledTimes(2);
-    });
-  });
-
   describe('linkTelegramToExistingAccount', () => {
     const mockAuthData = {
       telegramId: '123456789',
