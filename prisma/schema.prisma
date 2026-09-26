@@ -37,9 +37,15 @@ model User {
   lastLoginIp String?
   isActive Boolean @default(true)
   isEmailVerified Boolean @default(false)
+  emailVerifiedAt DateTime?
   emailVerificationToken String?
+  emailVerificationExpiresAt DateTime?
   passwordResetToken String?
   passwordResetExpiresAt DateTime?
+
+  // Признак того, что пароль задан пользователем (а не системный placeholder
+  // у Telegram-only аккаунтов). false => доступен set-password, true => change-password.
+  passwordSetByUser Boolean @default(false)
   
   // User Username (уникальный изменяемый идентификатор)
   username String? @unique

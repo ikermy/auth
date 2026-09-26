@@ -22,6 +22,10 @@ service AuthService {
     rpc changeTelegramAccount(ChangeTelegramAccountRequest) returns (ChangeTelegramAccountResponse);
     rpc terminateAllSessions(TerminateAllSessionsRequest) returns (TerminateAllSessionsResponse);
     rpc linkEmailToAccount(LinkEmailRequest) returns (LinkEmailResponse);
+
+    // Email verification (подтверждение владения email)
+    rpc requestEmailVerification(RequestEmailVerificationRequest) returns (RequestEmailVerificationResponse);
+    rpc verifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
     
     // User identity management
     rpc changeNickname(ChangeNicknameRequest) returns (ChangeNicknameResponse);
@@ -71,6 +75,29 @@ message RegisterRequest {
 message RegisterResponse {
     string access_token = 1;
     string refresh_token = 2;
+}
+
+message RequestEmailVerificationRequest {
+    // userId берётся из principal; поле оставлено для обратной совместимости.
+    string user_id = 1;
+}
+
+message RequestEmailVerificationResponse {
+    bool success = 1;
+    string message = 2;
+    string email = 3;
+    string expires_at = 4; // ISO-8601
+}
+
+message VerifyEmailRequest {
+    string token = 1; // одноразовый токен из письма
+}
+
+message VerifyEmailResponse {
+    bool success = 1;
+    string message = 2;
+    string email = 3;
+    bool is_email_verified = 4;
 }
 
 message RefreshTokenRequest {

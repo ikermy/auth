@@ -479,8 +479,8 @@ export class UserIdentityService {
    */
   private async isUsernameAvailable(username: string): Promise<boolean> {
     try {
-      const existingUser = await this.prismaService.user.findUnique({
-        where: { username: username },
+      const existingUser = await this.prismaService.user.findFirst({
+        where: { username: { equals: username, mode: 'insensitive' } },
       });
       return !existingUser;
     } catch (error) {

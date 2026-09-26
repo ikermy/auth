@@ -25,6 +25,7 @@ describe('SecureAuthService', () => {
           useValue: {
             user: {
               findUnique: jest.fn(),
+              findFirst: jest.fn(),
             },
           },
         },
@@ -41,7 +42,7 @@ describe('SecureAuthService', () => {
 
   describe('authenticateUser', () => {
     it('should authenticate user with correct credentials', async () => {
-      (prismaService.user.findUnique as jest.Mock).mockResolvedValue(mockUser);
+      (prismaService.user.findFirst as jest.Mock).mockResolvedValue(mockUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
       const result = await service.authenticateUser(
@@ -54,7 +55,7 @@ describe('SecureAuthService', () => {
     });
 
     it('should fail authentication with incorrect password', async () => {
-      (prismaService.user.findUnique as jest.Mock).mockResolvedValue(mockUser);
+      (prismaService.user.findFirst as jest.Mock).mockResolvedValue(mockUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(false);
 
       const result = await service.authenticateUser(
@@ -67,7 +68,7 @@ describe('SecureAuthService', () => {
     });
 
     it('should fail authentication for non-existent user', async () => {
-      (prismaService.user.findUnique as jest.Mock).mockResolvedValue(null);
+      (prismaService.user.findFirst as jest.Mock).mockResolvedValue(null);
 
       const result = await service.authenticateUser(
         'nonexistent@example.com',
@@ -80,7 +81,7 @@ describe('SecureAuthService', () => {
 
     it('should fail authentication for inactive user', async () => {
       const inactiveUser = { ...mockUser, isActive: false };
-      (prismaService.user.findUnique as jest.Mock).mockResolvedValue(
+      (prismaService.user.findFirst as jest.Mock).mockResolvedValue(
         inactiveUser,
       );
 
@@ -94,7 +95,7 @@ describe('SecureAuthService', () => {
     });
 
     it('should have consistent timing for security', async () => {
-      (prismaService.user.findUnique as jest.Mock).mockResolvedValue(mockUser);
+      (prismaService.user.findFirst as jest.Mock).mockResolvedValue(mockUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(false);
 
       const startTime = Date.now();
