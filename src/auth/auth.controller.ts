@@ -154,7 +154,10 @@ export class AuthController {
           success: false,
           failureReason: 'invalid_credentials',
         });
-        throw new Error('Invalid credentials');
+        throw new RpcException({
+          code: status.UNAUTHENTICATED,
+          message: 'Invalid credentials',
+        });
       }
 
       // 3. Проверяем 2FA ДО выдачи токенов, чтобы не создавать активную сессию.
